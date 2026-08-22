@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import './Home.css'
 
-export default function Home({ onEnterRoom }) {
+export default function Home({ onEnterRoom, error, connecting }) {
   const [mode, setMode] = useState(null) // null | 'host' | 'join'
   const [roomName, setRoomName] = useState('')
   const [roomCode, setRoomCode] = useState('')
@@ -135,13 +135,15 @@ export default function Home({ onEnterRoom }) {
               className="home__btn home__btn--primary"
               id="btn-create-room"
               onClick={handleHost}
-              disabled={!roomName.trim()}
+              disabled={!roomName.trim() || connecting}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <polygon points="5 3 19 12 5 21 5 3" />
               </svg>
-              Start Party
+              {connecting ? 'Creating…' : 'Start Party'}
             </button>
+
+            {error && <p className="home__error">{error}</p>}
           </div>
         )}
 
@@ -183,15 +185,17 @@ export default function Home({ onEnterRoom }) {
               className="home__btn home__btn--secondary"
               id="btn-join-room"
               onClick={handleJoin}
-              disabled={!roomCode.trim()}
+              disabled={!roomCode.trim() || connecting}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
                 <polyline points="10 17 15 12 10 7" />
                 <line x1="15" y1="12" x2="3" y2="12" />
               </svg>
-              Join Party
+              {connecting ? 'Joining…' : 'Join Party'}
             </button>
+
+            {error && <p className="home__error">{error}</p>}
           </div>
         )}
 

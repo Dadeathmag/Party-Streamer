@@ -1,11 +1,11 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import './Room.css'
 
 const SAMPLE_MESSAGES = [
   { id: 1, user: 'System', text: 'Welcome to the party! 🎉', system: true },
 ]
 
-function Room({ roomInfo, onLeave }) {
+function Room({ roomInfo, onLeave, members = [], connected, sendPlaybackSync, onPlaybackSync, onHostLeft }) {
   const { name, code, role } = roomInfo
   const isHost = role === 'host'
 
@@ -49,12 +49,47 @@ function Room({ roomInfo, onLeave }) {
     }
   }, [videoSrc])
 
+  // ── Host-left handler ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (isHost) return
+    onHostLeft?.(() => {
+      alert('The host has left the room.')
+      onLeave()
+    })
+  }, [isHost, onHostLeft, onLeave])
+
+  // ── Incoming playback sync (non-host) ──────────────────────────────────
+  useEffect(() => {
+    if (isHost) return
+    onPlaybackSync?.(({ action, time }) => {
+      const video = videoRef.current
+      if (!video) return
+      switch (action) {
+        case 'play':
+          video.currentTime = time
+          video.play().catch(() => {})
+          setIsPlaying(true)
+          break
+        case 'pause':
+          video.pause()
+          video.currentTime = time
+          setIsPlaying(false)
+          break
+        case 'seek':
+          video.currentTime = time
+          break
+      }
+    })
+  }, [isHost, onPlaybackSync])
+
   const togglePlay = () => {
     if (!videoRef.current) return
     if (isPlaying) {
       videoRef.current.pause()
+      if (isHost) sendPlaybackSync?.('pause', videoRef.current.currentTime)
     } else {
       videoRef.current.play()
+      if (isHost) sendPlaybackSync?.('play', videoRef.current.currentTime)
     }
     setIsPlaying(!isPlaying)
   }
@@ -63,7 +98,9 @@ function Room({ roomInfo, onLeave }) {
     if (!videoRef.current || !progressRef.current) return
     const rect = progressRef.current.getBoundingClientRect()
     const pct = (e.clientX - rect.left) / rect.width
-    videoRef.current.currentTime = pct * duration
+    const newTime = pct * duration
+    videoRef.current.currentTime = newTime
+    if (isHost) sendPlaybackSync?.('seek', newTime)
   }
 
   const handleVolume = (e) => {
@@ -83,6 +120,7 @@ function Room({ roomInfo, onLeave }) {
   const skip = (seconds) => {
     if (!videoRef.current) return
     videoRef.current.currentTime += seconds
+    if (isHost) sendPlaybackSync?.('seek', videoRef.current.currentTime)
   }
 
   const handleFileSelect = (e) => {
@@ -199,7 +237,7 @@ function Room({ roomInfo, onLeave }) {
               <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
               <path d="M16 3.13a4 4 0 0 1 0 7.75" />
             </svg>
-            <span className="room__action-label">2</span>
+            <span className="room__action-label">{members.length}</span>
           </button>
           <button
             className="room__action-btn"
@@ -257,16 +295,16 @@ function Room({ roomInfo, onLeave }) {
             {/* Members Popup */}
             {showMembers && (
               <div className="room__members-popup" id="members-popup">
-                <h3 className="room__members-title">Members</h3>
-                <div className="room__member-item">
-                  <div className="room__member-avatar room__member-avatar--host">H</div>
-                  <span>Host</span>
-                  <span className="room__member-role">★</span>
-                </div>
-                <div className="room__member-item">
-                  <div className="room__member-avatar">Y</div>
-                  <span>You</span>
-                </div>
+                <h3 className="room__members-title">Members ({members.length})</h3>
+                {members.map((m) => (
+                  <div className="room__member-item" key={m.socketId}>
+                    <div className={`room__member-avatar ${m.role === 'host' ? 'room__member-avatar--host' : ''}`}>
+                      {m.displayName.charAt(0).toUpperCase()}
+                    </div>
+                    <span>{m.displayName}</span>
+                    {m.role === 'host' && <span className="room__member-role">★</span>}
+                  </div>
+                ))}
               </div>
             )}
           </div>
