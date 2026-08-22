@@ -101,7 +101,7 @@ Server-side enforcement:
 | Event                 | Payload                                    | Audience      |
 | --------------------- | ------------------------------------------ | ------------- |
 | `room:member-joined`  | `{ socketId, displayName, members }`       | room          |
-| `room:member-left`    | `{ socketId, members }`                    | room          |
+| `room:member-left`    | `{ socketId, displayName, members }`       | room          |
 | `room:host-left`      | — (room destroyed)                         | room          |
 | `playback:sync`       | `{ action, time }`                         | everyone else |
 | `chat:message`        | `{ from, displayName, text, ts }`          | whole room incl. sender |

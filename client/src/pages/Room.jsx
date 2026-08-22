@@ -35,9 +35,11 @@ const SAMPLE_MESSAGES = [
  * @param {(cb: (data: { action: string, time: number }) => void) => void} props.onPlaybackSync
  * @param {(text: string) => void} props.sendChat
  * @param {(cb: (data: { from: string, displayName: string, text: string, ts: number }) => void) => void} props.onChatMessage
+ * @param {(cb: (displayName: string) => void) => void} props.onMemberJoined
+ * @param {(cb: (displayName: string) => void) => void} props.onMemberLeft
  * @param {(cb: () => void) => void} props.onHostLeft
  */
-function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlaybackSync, sendChat, onChatMessage, onHostLeft }) {
+function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlaybackSync, sendChat, onChatMessage, onMemberJoined, onMemberLeft, onHostLeft }) {
   const { name, code, role } = roomInfo
   const isHost = role === 'host'
 
@@ -200,6 +202,12 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
       system: true,
     }])
   }
+
+  // Chat: system lines when other members join or leave the party.
+  useEffect(() => {
+    onMemberJoined?.((joinedName) => addSystemMessage(`${joinedName} joined the party`))
+    onMemberLeft?.((leftName) => addSystemMessage(`${leftName} left the party`))
+  }, [onMemberJoined, onMemberLeft])
 
   const sendMessage = () => {
     const text = chatInput.trim()

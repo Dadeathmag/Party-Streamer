@@ -156,8 +156,9 @@ class RoomStore {
    * - A regular member leaving just shrinks the member list.
    *
    * @param {string} socketId
-   * @returns {{ code: string, destroyed: boolean, members: object[] } | null}
-   *   null when the socket was not in any room.
+   * @returns {{ code: string, destroyed: boolean, members: object[], displayName?: string } | null}
+   *   null when the socket was not in any room. `displayName` is the leaver's
+   *   name (absent when the room was destroyed or the member was unknown).
    */
   removeSocket(socketId) {
     const code = this.socketToRoom.get(socketId);
@@ -168,6 +169,7 @@ class RoomStore {
     const room = this.rooms.get(code);
     if (!room) return null;
 
+    const leaver = room.members.get(socketId);
     room.members.delete(socketId);
 
     if (room.hostId === socketId) {
@@ -180,7 +182,12 @@ class RoomStore {
       return { code, destroyed: true, members: [] };
     }
 
-    return { code, destroyed: false, members: this.serialiseMembers(room) };
+    return {
+      code,
+      destroyed: false,
+      members: this.serialiseMembers(room),
+      displayName: leaver?.displayName,
+    };
   }
 }
 

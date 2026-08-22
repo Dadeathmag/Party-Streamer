@@ -64,6 +64,8 @@ function App() {
           onPlaybackSync={socket.onPlaybackSync}
           sendChat={socket.sendChat}
           onChatMessage={socket.onChatMessage}
+          onMemberJoined={socket.onMemberJoined}
+          onMemberLeft={socket.onMemberLeft}
           onHostLeft={socket.onHostLeft}
         />
       )}

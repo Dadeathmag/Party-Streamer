@@ -262,7 +262,22 @@ async function runTests() {
   }
   console.log('✓ Host chat relayed to members (input trimmed by server)');
 
-  // 12. Test Disconnect / Host-Left
+  // 12. Test Member-Left carries the leaver's display name
+  const outsiderId = outsiderSocket.id; // capture before disconnect() clears it
+  const memberLeftPromise = new Promise((resolve) => {
+    hostSocket.once('room:member-left', resolve);
+  });
+  outsiderSocket.disconnect();
+  const leftData = await memberLeftPromise;
+  if (
+    leftData.socketId !== outsiderId ||
+    leftData.displayName !== 'Test Guest 2'
+  ) {
+    throw new Error('room:member-left data mismatch: ' + JSON.stringify(leftData));
+  }
+  console.log('✓ Host received room:member-left with displayName:', leftData.displayName);
+
+  // 13. Test Disconnect / Host-Left
   const guestHostLeftPromise = new Promise((resolve) => {
     guestSocket.on('room:host-left', () => {
       console.log('✓ Guest received room:host-left upon host disconnect');
@@ -274,7 +289,6 @@ async function runTests() {
   await guestHostLeftPromise;
 
   guestSocket.disconnect();
-  outsiderSocket.disconnect();
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────

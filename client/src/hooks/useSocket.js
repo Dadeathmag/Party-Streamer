@@ -76,6 +76,10 @@ function ensureConnected(socket, timeoutMs = CONNECT_TIMEOUT_MS) {
  *   sendChat(text)
  *   onChatMessage(callback)  — register a listener for incoming chat messages
  *                              ({ from, displayName, text, ts })
+ *   onMemberJoined(callback) — register a listener for other members joining
+ *                              (receives their displayName)
+ *   onMemberLeft(callback)   — register a listener for other members leaving
+ *                              (receives their displayName)
  *   onHostLeft(callback)     — register a listener for host-left events
  */
 export default function useSocket() {
@@ -89,6 +93,8 @@ export default function useSocket() {
   // Refs for external callbacks (avoids stale closures)
   const playbackSyncCbRef = useRef(null)
   const chatMessageCbRef = useRef(null)
+  const memberJoinedCbRef = useRef(null)
+  const memberLeftCbRef = useRef(null)
   const hostLeftCbRef = useRef(null)
 
   // ── Initialise socket once on mount ──────────────────────────────────────
@@ -121,12 +127,16 @@ export default function useSocket() {
     })
 
     // ── Room events ──────────────────────────────────────────────────────
-    socket.on('room:member-joined', ({ members: m }) => {
+    // Note: the server sends member-joined/member-left to everyone EXCEPT
+    // the joiner/leaver, so these always describe *other* members.
+    socket.on('room:member-joined', ({ displayName, members: m }) => {
       setMembers(m)
+      if (displayName) memberJoinedCbRef.current?.(displayName)
     })
 
-    socket.on('room:member-left', ({ members: m }) => {
+    socket.on('room:member-left', ({ displayName, members: m }) => {
       setMembers(m)
+      if (displayName) memberLeftCbRef.current?.(displayName)
     })
 
     socket.on('room:host-left', () => {
@@ -238,6 +248,14 @@ export default function useSocket() {
     chatMessageCbRef.current = cb
   }, [])
 
+  const onMemberJoined = useCallback((cb) => {
+    memberJoinedCbRef.current = cb
+  }, [])
+
+  const onMemberLeft = useCallback((cb) => {
+    memberLeftCbRef.current = cb
+  }, [])
+
   const onHostLeft = useCallback((cb) => {
     hostLeftCbRef.current = cb
   }, [])
@@ -255,6 +273,8 @@ export default function useSocket() {
     onPlaybackSync,
     sendChat,
     onChatMessage,
+    onMemberJoined,
+    onMemberLeft,
     onHostLeft,
   }
 }

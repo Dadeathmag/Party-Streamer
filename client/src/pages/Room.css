@@ -478,7 +478,17 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  max-width: 85%;
   animation: fadeIn 0.25s var(--ease-out) both;
+}
+
+/* Own messages hug the right edge so you can spot them at a glance. */
+.room__chat-msg--own {
+  align-self: flex-end;
+  align-items: flex-end;
+  padding: 6px 10px;
+  background: var(--secondary-dim);
+  border-radius: var(--radius-sm);
 }
 
 .room__chat-msg--system {

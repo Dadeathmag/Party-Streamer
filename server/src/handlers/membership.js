@@ -27,6 +27,7 @@ function leaveCurrentRoom(io, store, socketId) {
   } else {
     io.to(removed.code).emit('room:member-left', {
       socketId,
+      displayName: removed.displayName,
       members: removed.members,
     });
   }

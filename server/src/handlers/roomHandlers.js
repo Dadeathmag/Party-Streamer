@@ -10,7 +10,7 @@ const { leaveCurrentRoom } = require('./membership');
  *   client emits 'room:join'   { code, displayName }        → ack { ok, roomId, name, code, members }
  *   client emits 'room:leave'                               → ack { ok }
  * server emits 'room:member-joined' { socketId, displayName, members }
- * server emits 'room:member-left'   { socketId, members }
+ * server emits 'room:member-left'   { socketId, displayName, members }
  * server emits 'room:host-left'
  *
  * `displayName` is optional; when omitted (or blank after trimming) the

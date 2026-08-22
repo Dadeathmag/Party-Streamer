@@ -126,7 +126,7 @@ Design rules:
 | `room:join`           | client → server  | `{ code, displayName }` → ack        |
 | `room:leave`          | client → server  | —                                    |
 | `room:member-joined`  | server → room    | `{ socketId, displayName, members }` |
-| `room:member-left`    | server → room    | `{ socketId, members }`              |
+| `room:member-left`    | server → room    | `{ socketId, displayName, members }` |
 | `room:host-left`      | server → room    | — (room is destroyed)                |
 | `playback:sync`       | host → server    | `{ action: 'play'\|'pause'\|'seek', time }` |
 | `playback:sync`       | server → guests  | `{ action, time }`                   |
