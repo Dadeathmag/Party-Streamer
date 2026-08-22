@@ -6,6 +6,8 @@
  *   - membership list (updated by room:member-joined / room:member-left)
  *   - host-left notification forwarding
  *   - playback:sync send (host) and receive (guests)
+ *   - chat:message send and receive (echoed back to the sender, so history
+ *     is appended from a single source; mark "own" via myId === msg.from)
  *
  * The hook is mounted once in App.jsx; components receive slices of it as
  * props. See src/handlers/*.js in the server for the matching wire format.
@@ -62,25 +64,31 @@ function ensureConnected(socket, timeoutMs = CONNECT_TIMEOUT_MS) {
  *
  * Returns:
  *   connected  — boolean, true when socket is connected
+ *   myId       — string | null, this client's current socket id
  *   members    — array of { socketId, displayName, role }
  *   error      — string | null, last error message
  *   connecting — boolean, true while a create/join is in-flight
- *   createRoom(name, code) → Promise<response>
- *   joinRoom(code)         → Promise<response>
+ *   createRoom(name, code, displayName) → Promise<response>
+ *   joinRoom(code, displayName)         → Promise<response>
  *   leaveRoom()
  *   sendPlaybackSync(action, time)
  *   onPlaybackSync(callback) — register a listener for incoming sync events
+ *   sendChat(text)
+ *   onChatMessage(callback)  — register a listener for incoming chat messages
+ *                              ({ from, displayName, text, ts })
  *   onHostLeft(callback)     — register a listener for host-left events
  */
 export default function useSocket() {
   const socketRef = useRef(null)
   const [connected, setConnected] = useState(false)
+  const [myId, setMyId] = useState(null)
   const [members, setMembers] = useState([])
   const [error, setError] = useState(null)
   const [connecting, setConnecting] = useState(false)
 
   // Refs for external callbacks (avoids stale closures)
   const playbackSyncCbRef = useRef(null)
+  const chatMessageCbRef = useRef(null)
   const hostLeftCbRef = useRef(null)
 
   // ── Initialise socket once on mount ──────────────────────────────────────
@@ -97,12 +105,14 @@ export default function useSocket() {
     socket.on('connect', () => {
       console.log('[socket] connected:', socket.id)
       setConnected(true)
+      setMyId(socket.id)
       setError(null)
     })
 
     socket.on('disconnect', (reason) => {
       console.log('[socket] disconnected:', reason)
       setConnected(false)
+      setMyId(null)
     })
 
     socket.on('connect_error', (err) => {
@@ -129,6 +139,11 @@ export default function useSocket() {
       playbackSyncCbRef.current?.(data)
     })
 
+    // ── Chat (incoming, includes the sender's own echo) ──────────────────
+    socket.on('chat:message', (data) => {
+      chatMessageCbRef.current?.(data)
+    })
+
     return () => {
       socket.disconnect()
       socketRef.current = null
@@ -136,7 +151,7 @@ export default function useSocket() {
   }, [])
 
   // ── Create Room ─────────────────────────────────────────────────────────
-  const createRoom = useCallback(async (name, code) => {
+  const createRoom = useCallback(async (name, code, displayName) => {
     const socket = socketRef.current
 
     setConnecting(true)
@@ -150,7 +165,7 @@ export default function useSocket() {
     }
 
     const res = await new Promise((resolve) => {
-      socket.emit('room:create', { name, code }, resolve)
+      socket.emit('room:create', { name, code, displayName }, resolve)
     })
 
     setConnecting(false)
@@ -164,7 +179,7 @@ export default function useSocket() {
   }, [])
 
   // ── Join Room ───────────────────────────────────────────────────────────
-  const joinRoom = useCallback(async (code) => {
+  const joinRoom = useCallback(async (code, displayName) => {
     const socket = socketRef.current
 
     setConnecting(true)
@@ -178,7 +193,7 @@ export default function useSocket() {
     }
 
     const res = await new Promise((resolve) => {
-      socket.emit('room:join', { code }, resolve)
+      socket.emit('room:join', { code, displayName }, resolve)
     })
 
     setConnecting(false)
@@ -207,9 +222,20 @@ export default function useSocket() {
     socket.emit('playback:sync', { action, time })
   }, [])
 
+  // ── Chat (outgoing; the server echoes it back to everyone incl. sender) ─
+  const sendChat = useCallback((text) => {
+    const socket = socketRef.current
+    if (!socket?.connected) return
+    socket.emit('chat:message', { text })
+  }, [])
+
   // ── Callback registration ──────────────────────────────────────────────
   const onPlaybackSync = useCallback((cb) => {
     playbackSyncCbRef.current = cb
+  }, [])
+
+  const onChatMessage = useCallback((cb) => {
+    chatMessageCbRef.current = cb
   }, [])
 
   const onHostLeft = useCallback((cb) => {
@@ -218,6 +244,7 @@ export default function useSocket() {
 
   return {
     connected,
+    myId,
     members,
     error,
     connecting,
@@ -226,6 +253,8 @@ export default function useSocket() {
     leaveRoom,
     sendPlaybackSync,
     onPlaybackSync,
+    sendChat,
+    onChatMessage,
     onHostLeft,
   }
 }

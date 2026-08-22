@@ -108,11 +108,18 @@ async function runTests() {
   // 2. Create Room
   const roomCode = 'TST' + Math.floor(100 + Math.random() * 900);
   const createRes = await new Promise((resolve) => {
-    hostSocket.emit('room:create', { name: 'Integration Test Room', code: roomCode }, resolve);
+    hostSocket.emit(
+      'room:create',
+      { name: 'Integration Test Room', code: roomCode, displayName: 'Test Host' },
+      resolve
+    );
   });
   console.log('✓ Host created room:', createRes);
   if (!createRes.ok || createRes.code !== roomCode) {
     throw new Error('Failed to create room');
+  }
+  if (createRes.members[0]?.displayName !== 'Test Host') {
+    throw new Error('Host display name not applied');
   }
 
   // 3. Connect Guest
@@ -127,16 +134,23 @@ async function runTests() {
     });
   });
 
-  // 4. Guest Joins Room
+  // 4. Guest Joins Room (with a custom display name)
   const joinRes = await new Promise((resolve) => {
-    guestSocket.emit('room:join', { code: roomCode }, resolve);
+    guestSocket.emit('room:join', { code: roomCode, displayName: 'Test Guest' }, resolve);
   });
   console.log('✓ Guest joined room:', joinRes);
   if (!joinRes.ok || joinRes.members.length !== 2) {
     throw new Error('Failed to join room properly');
   }
+  const joinedMember = joinRes.members.find((m) => m.socketId === guestSocket.id);
+  if (!joinedMember || joinedMember.displayName !== 'Test Guest') {
+    throw new Error('Guest display name not applied');
+  }
 
-  await hostMemberJoinedPromise;
+  const memberJoinedData = await hostMemberJoinedPromise;
+  if (memberJoinedData.displayName !== 'Test Guest') {
+    throw new Error('room:member-joined did not carry the custom display name');
+  }
 
   // 5. Test WebRTC Signaling Relay
   const guestOfferPromise = new Promise((resolve) => {
@@ -175,7 +189,80 @@ async function runTests() {
   }
   console.log('✓ Non-host playback sync properly ignored by server');
 
-  // 8. Test Disconnect / Host-Left
+  // 8. Test Chat Relay — non-members must not reach the room
+  const outsiderSocket = await connectSocket('Outsider');
+  console.log('✓ Outsider connected with ID:', outsiderSocket.id);
+
+  let strayChat = false;
+  const onStrayChat = () => {
+    strayChat = true;
+  };
+  hostSocket.on('chat:message', onStrayChat);
+  outsiderSocket.emit('chat:message', { text: 'sneaky message' });
+  await new Promise((r) => setTimeout(r, 200));
+  hostSocket.off('chat:message', onStrayChat);
+  if (strayChat) {
+    throw new Error('Non-member was able to dispatch chat:message');
+  }
+  console.log('✓ Non-member chat properly ignored by server');
+
+  // 9. Duplicate display names get a numeric suffix
+  const dupJoinRes = await new Promise((resolve) => {
+    outsiderSocket.emit('room:join', { code: roomCode, displayName: 'Test Guest' }, resolve);
+  });
+  if (!dupJoinRes.ok) throw new Error('Duplicate-name guest failed to join');
+  const dupMember = dupJoinRes.members.find((m) => m.socketId === outsiderSocket.id);
+  if (!dupMember || dupMember.displayName !== 'Test Guest 2') {
+    throw new Error(`Duplicate name not suffixed (got "${dupMember?.displayName}")`);
+  }
+  console.log('✓ Duplicate guest name deduplicated as:', dupMember.displayName);
+
+  // 10. Test Chat Relay — guest → room (sender receives own echo too)
+  const hostChatPromise = new Promise((resolve) => {
+    hostSocket.once('chat:message', resolve);
+  });
+  const guestEchoPromise = new Promise((resolve) => {
+    guestSocket.once('chat:message', resolve);
+  });
+  const outsiderCopyPromise = new Promise((resolve) => {
+    outsiderSocket.once('chat:message', resolve);
+  });
+
+  guestSocket.emit('chat:message', { text: 'hello from the guest' });
+  const [hostChat, guestEcho] = await Promise.all([
+    hostChatPromise,
+    guestEchoPromise,
+    outsiderCopyPromise,
+  ]);
+  if (
+    hostChat.from !== guestSocket.id ||
+    hostChat.displayName !== 'Test Guest' ||
+    hostChat.text !== 'hello from the guest' ||
+    typeof hostChat.ts !== 'number'
+  ) {
+    throw new Error('Guest chat relay data mismatch: ' + JSON.stringify(hostChat));
+  }
+  if (guestEcho.text !== 'hello from the guest') {
+    throw new Error('Sender did not receive their own chat echo');
+  }
+  console.log('✓ Guest chat relayed to all members and echoed back to sender');
+
+  // 11. Test Chat Relay — host → room
+  const outsiderChatPromise = new Promise((resolve) => {
+    outsiderSocket.once('chat:message', resolve);
+  });
+  hostSocket.emit('chat:message', { text: 'hello from the host   ' });
+  const outsiderChat = await outsiderChatPromise;
+  if (
+    outsiderChat.from !== hostSocket.id ||
+    outsiderChat.displayName !== 'Test Host' ||
+    outsiderChat.text !== 'hello from the host'
+  ) {
+    throw new Error('Host chat relay data mismatch: ' + JSON.stringify(outsiderChat));
+  }
+  console.log('✓ Host chat relayed to members (input trimmed by server)');
+
+  // 12. Test Disconnect / Host-Left
   const guestHostLeftPromise = new Promise((resolve) => {
     guestSocket.on('room:host-left', () => {
       console.log('✓ Guest received room:host-left upon host disconnect');
@@ -187,6 +274,7 @@ async function runTests() {
   await guestHostLeftPromise;
 
   guestSocket.disconnect();
+  outsiderSocket.disconnect();
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────

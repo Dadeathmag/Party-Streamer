@@ -3,8 +3,8 @@ import { MessageIcon, XIcon, SendIcon } from './Icons.jsx'
 /**
  * @file Live chat sidebar: header, scrolling message list and the input row.
  *
- * Chat is currently local-only (messages never leave the browser); wiring it
- * to Socket.IO later only requires passing messages from useSocket state.
+ * Presentational only — messages arrive via props (relayed through
+ * useSocket's chat:message wiring); sending goes through onSend → sendChat.
  */
 
 /**

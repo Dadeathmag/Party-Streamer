@@ -108,7 +108,7 @@ among active rooms. **Target rule:** the *server* generates the code.
 | 4     | Playback sync on P2P: host PLAY/PAUSE/SEEK/SKIP via protocol messages; drift handling | ◐ Partial (relay exists; not yet P2P) |
 | 5     | Basic video P2P: evaluate media tracks vs MSE vs WebTorrent vs chunked DataChannel; browser memory limits | ⬜ Planned |
 | 6     | Peer forwarding: small distribution tree with configurable upload slots | ⬜ Planned |
-| 7     | Chat over DataChannels (chat currently local-only)            | ⬜ Planned |
+| 7     | Chat over DataChannels (chat currently Socket.IO-relayed)     | ⬜ Planned |
 | 8     | Voice: `getUserMedia()` + WebRTC audio                        | ⬜ Planned |
 | 9     | Mobile optimization: bandwidth, memory, battery, recovery, layout | ⬜ Planned |
 
@@ -203,4 +203,7 @@ These are deliberate or pending corrections — see AGENTS.md before changing th
 4. **Event naming uses `room:*` / `signal:*` / `playback:*`** namespaces rather
    than the originally sketched `create-room` / `webrtc-offer` names. The code
    is authoritative; don't rename without updating every doc.
-5. **No shareable room URLs yet** (`/room/:code` routing planned but not built).
+5. **Chat relays over the signaling transport** (`chat:message` via
+   Socket.IO, membership-checked, never stored) instead of DataChannels —
+   acceptable bridge until Phase 7; payload shape is transport-independent.
+6. **No shareable room URLs yet** (`/room/:code` routing planned but not built).

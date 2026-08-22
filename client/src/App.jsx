@@ -22,13 +22,13 @@ function App() {
   const socket = useSocket()
 
   const handleEnterRoom = async (info) => {
-    const { name, code, role } = info
+    const { displayName, name, code, role } = info
 
     if (role === 'host') {
-      const res = await socket.createRoom(name, code)
+      const res = await socket.createRoom(name, code, displayName)
       if (!res.ok) return // error is set inside the hook
     } else {
-      const res = await socket.joinRoom(code)
+      const res = await socket.joinRoom(code, displayName)
       if (!res.ok) return
       // Use the server-authoritative room name
       info = { ...info, name: res.name }
@@ -59,8 +59,11 @@ function App() {
           onLeave={handleLeaveRoom}
           members={socket.members}
           connected={socket.connected}
+          myId={socket.myId}
           sendPlaybackSync={socket.sendPlaybackSync}
           onPlaybackSync={socket.onPlaybackSync}
+          sendChat={socket.sendChat}
+          onChatMessage={socket.onChatMessage}
           onHostLeft={socket.onHostLeft}
         />
       )}

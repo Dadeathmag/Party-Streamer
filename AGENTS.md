@@ -11,9 +11,10 @@ code. The server is **signaling only** — it must never receive, store, or
 proxy video.
 
 Current status: Phases 1–2 complete (UI + signaling, integration-tested), plus
-early Phase 4 mechanics (`playback:sync` relayed via Socket.IO, host-only).
-**Next task is Phase 3** — see bottom of this file. Chat is local-only. No P2P
-media yet.
+early Phase 4 mechanics (`playback:sync` relayed via Socket.IO, host-only) and
+chat relayed via Socket.IO (`chat:message`, membership-checked). Members now
+carry client-supplied display names. **Next task is Phase 3** — see bottom of
+this file. No P2P media yet.
 
 ## Repository Map
 
@@ -35,7 +36,8 @@ server/                          CommonJS, port 3002
         ├── membership.js        shared "leave current room + notify" logic
         ├── roomHandlers.js      room:create / room:join / room:leave (+ acks)
         ├── signalHandlers.js    WebRTC offer/answer/ICE blind pass-through relay
-        └── playbackHandlers.js  playback:sync relay (host-only) + disconnect teardown
+        ├── playbackHandlers.js  playback:sync relay (host-only) + disconnect teardown
+        └── chatHandlers.js      chat:message relay (membership-checked, no storage)
 
 client/                          React 19 + Vite, ESM
 ├── vite.config.js               dev proxy: /socket.io → http://localhost:3002
@@ -45,7 +47,7 @@ client/                          React 19 + Vite, ESM
     ├── hooks/
     │   └── useSocket.js         ALL Socket.IO logic: connection lifecycle, room
     │                            create/join/leave, members state, playback sync
-    │                            send/receive, onHostLeft callback
+    │                            send/receive, chat send/receive, onHostLeft callback
     ├── lib/formatTime.js        pure helpers
     ├── components/              presentational only:
     │   ├── Icons.jsx            inline SVG set (currentColor, size prop)
@@ -71,10 +73,11 @@ One source of truth per handler lives at the top of each module in
 
 | Event              | Payload                                        | Ack response |
 | ------------------ | ---------------------------------------------- | ------------ |
-| `room:create`      | `{ name, code }`                               | `{ ok: true, roomId, code, members }` or `{ ok: false, error }` |
-| `room:join`        | `{ code }`                                     | `{ ok: true, roomId, name, code, members }` |
+| `room:create`      | `{ name, code, displayName }`                  | `{ ok: true, roomId, code, members }` or `{ ok: false, error }` |
+| `room:join`        | `{ code, displayName }`                        | `{ ok: true, roomId, name, code, members }` |
 | `room:leave`       | —                                              | `{ ok: true }` |
 | `playback:sync`    | `{ action: 'play'\|'pause'\|'seek', time }`    | none (fire-and-forget) |
+| `chat:message`     | `{ text }`                                     | none (fire-and-forget) |
 | `signal:offer`     | `{ to, offer }`                                | none |
 | `signal:answer`    | `{ to, answer }`                               | none |
 | `signal:ice-candidate` | `{ to, candidate }`                        | none |
@@ -83,7 +86,12 @@ Server-side enforcement:
 
 - Codes are upper-cased before lookup; duplicate codes rejected on create;
   unknown codes rejected on join.
+- `displayName` is optional on create/join; blank/missing falls back to
+  "Host" / "Guest-N". Duplicates inside a room get a numeric suffix
+  ("Alex 2"). Names are trimmed and capped at 24 chars server-side.
 - `playback:sync` is silently dropped unless the sender is that room's host.
+- `chat:message` requires membership; text is trimmed, capped at 300 chars,
+  and never stored — the room's history lives only in clients.
 - Signal relays are blind: the server never inspects SDP/ICE payloads.
 - Disconnect always runs `leaveCurrentRoom`; if the leaver was the host the
   room is destroyed and every member gets `room:host-left`.
@@ -96,9 +104,14 @@ Server-side enforcement:
 | `room:member-left`    | `{ socketId, members }`                    | room          |
 | `room:host-left`      | — (room destroyed)                         | room          |
 | `playback:sync`       | `{ action, time }`                         | everyone else |
+| `chat:message`        | `{ from, displayName, text, ts }`          | whole room incl. sender |
 | `signal:offer`        | `{ from, offer }`                          | target peer   |
 | `signal:answer`       | `{ from, answer }`                         | target peer   |
 | `signal:ice-candidate`| `{ from, candidate }`                      | target peer   |
+
+Chat echo note: because the sender receives their own message back, clients
+append chat history from exactly one place (the `chat:message` listener) and
+mark messages "own" via `from === myId`.
 
 Client behavior contract (in `useSocket.js`): every mutating call awaits
 `ensureConnected()` first (revives auto-reconnect if exhausted, 5s timeout),
@@ -188,11 +201,11 @@ Do not silently change these without updating project.md's deviation list:
    server-generated codes from alphabet `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`.
 2. **No max-room-size cap yet** — add configurable `MAX_PEERS_PER_ROOM ≈ 6`
    check to join validation.
-3. **Chat is local-only** — moves to DataChannels in Phase 7.
+3. **Chat relays over Socket.IO** — works end-to-end today but moves to
+   DataChannels in Phase 7 (payload shape already transport-independent).
 4. **Playback sync rides the signaling transport** — migrate onto DataChannels
    once Phase 3 exists.
-5. **Guests have no display names** — server assigns "Host"/"Guest-N".
-6. **No shareable room URLs** (`/room/:code`) yet.
+5. **No shareable room URLs** (`/room/:code`) yet.
 
 ## Next Task: Phase 3 — Basic WebRTC
 

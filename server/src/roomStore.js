@@ -61,14 +61,43 @@ class RoomStore {
   }
 
   /**
+   * Resolve a member's display name: use the caller-supplied name when it is
+   * a non-empty string, otherwise fall back to `fallback`. If the name is
+   * already taken inside the room, a numeric suffix (" 2", " 3", …) is
+   * appended so every member stays distinguishable in chat/member lists.
+   * Comparison is case-insensitive.
+   *
+   * @param {object} room
+   * @param {string | undefined} desired raw (already length-capped) input
+   * @param {string} fallback e.g. "Host" or "Guest-3"
+   * @returns {string}
+   */
+  resolveDisplayName(room, desired, fallback) {
+    const base = typeof desired === 'string' ? desired.trim() : '';
+    if (!base) return fallback;
+
+    const taken = new Set(
+      [...room.members.values()].map((m) => m.displayName.toLowerCase())
+    );
+    let candidate = base;
+    let n = 2;
+    while (taken.has(candidate.toLowerCase())) {
+      candidate = `${base} ${n}`;
+      n += 1;
+    }
+    return candidate;
+  }
+
+  /**
    * Create a brand-new room owned by the given socket.
    *
-   * @param {{ name: string, code: string, hostId: string }} params
-   *   `code` is expected pre-normalised (upper-case).
+   * @param {{ name: string, code: string, hostId: string, displayName?: string }} params
+   *   `code` is expected pre-normalised (upper-case). `displayName` is an
+   *   optional custom host name; defaults to "Host".
    * @returns {{ ok: true, room: object, members: object[] } |
    *           { ok: false, error: string }}
    */
-  createHostRoom({ name, code, hostId }) {
+  createHostRoom({ name, code, hostId, displayName }) {
     if (this.rooms.has(code)) {
       return { ok: false, error: 'A room with that code already exists.' };
     }
@@ -77,8 +106,12 @@ class RoomStore {
       code,
       name,
       hostId,
-      members: new Map([[hostId, { displayName: 'Host', role: 'host' }]]),
+      members: new Map(),
     };
+    room.members.set(
+      hostId,
+      { displayName: this.resolveDisplayName(room, displayName, 'Host'), role: 'host' }
+    );
 
     this.rooms.set(code, room);
     this.socketToRoom.set(hostId, code);
@@ -88,13 +121,17 @@ class RoomStore {
   }
 
   /**
-   * Add a guest to an existing room, assigning the next "Guest-N" name.
+   * Add a guest to an existing room.
    *
-   * @param {{ code: string, socketId: string }} params
+   * Uses the guest's supplied `displayName` when present; otherwise falls
+   * back to the next "Guest-N" name for the room. Duplicate names get a
+   * numeric suffix (see resolveDisplayName).
+   *
+   * @param {{ code: string, socketId: string, displayName?: string }} params
    * @returns {{ ok: true, room: object, displayName: string, members: object[] } |
    *           { ok: false, error: string }}
    */
-  joinGuest({ code, socketId }) {
+  joinGuest({ code, socketId, displayName }) {
     const room = this.rooms.get(code);
     if (!room) {
       return { ok: false, error: 'Room not found. Check the code and try again.' };
@@ -102,12 +139,13 @@ class RoomStore {
 
     const guestNum = (this.guestCounters.get(code) || 0) + 1;
     this.guestCounters.set(code, guestNum);
-    const displayName = `Guest-${guestNum}`;
 
-    room.members.set(socketId, { displayName, role: 'member' });
+    const finalName = this.resolveDisplayName(room, displayName, `Guest-${guestNum}`);
+
+    room.members.set(socketId, { displayName: finalName, role: 'member' });
     this.socketToRoom.set(socketId, code);
 
-    return { ok: true, room, displayName, members: this.serialiseMembers(room) };
+    return { ok: true, room, displayName: finalName, members: this.serialiseMembers(room) };
   }
 
   /**

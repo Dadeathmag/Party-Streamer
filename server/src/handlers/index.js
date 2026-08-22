@@ -14,6 +14,7 @@ const {
   registerPlaybackHandlers,
   registerDisconnectHandler,
 } = require('./playbackHandlers');
+const { registerChatHandlers } = require('./chatHandlers');
 
 /**
  * Attach all event handlers to every incoming connection.
@@ -28,6 +29,7 @@ function registerHandlers(io, store) {
     registerRoomHandlers(io, socket, store);
     registerSignalHandlers(io, socket);
     registerPlaybackHandlers(io, socket, store);
+    registerChatHandlers(io, socket, store);
     registerDisconnectHandler(io, socket, store);
   });
 }

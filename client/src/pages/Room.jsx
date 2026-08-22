@@ -22,19 +22,22 @@ import ChatPanel from '../components/ChatPanel.jsx'
 import './Room.css'
 
 const SAMPLE_MESSAGES = [
-  { id: 1, user: 'System', text: 'Welcome to the party! 🎉', system: true },
+  { id: 0, user: 'System', text: 'Welcome to the party! 🎉', system: true },
 ]
 
 /**
  * @param {object} props
- * @param {{ name: string, code: string, role: 'host'|'member' }} props.roomInfo
+ * @param {{ name: string, code: string, role: 'host'|'member', displayName: string }} props.roomInfo
  * @param {() => void} props.onLeave
  * @param {Array<{ socketId: string, displayName: string, role: string }>} props.members
+ * @param {string | null} props.myId   this client's socket id (marks own chat msgs)
  * @param {(action: string, time: number) => void} props.sendPlaybackSync  host only
  * @param {(cb: (data: { action: string, time: number }) => void) => void} props.onPlaybackSync
+ * @param {(text: string) => void} props.sendChat
+ * @param {(cb: (data: { from: string, displayName: string, text: string, ts: number }) => void) => void} props.onChatMessage
  * @param {(cb: () => void) => void} props.onHostLeft
  */
-function Room({ roomInfo, onLeave, members = [], sendPlaybackSync, onPlaybackSync, onHostLeft }) {
+function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlaybackSync, sendChat, onChatMessage, onHostLeft }) {
   const { name, code, role } = roomInfo
   const isHost = role === 'host'
 
@@ -57,6 +60,7 @@ function Room({ roomInfo, onLeave, members = [], sendPlaybackSync, onPlaybackSyn
   const chatEndRef = useRef(null)
   const fileInputRef = useRef(null)
   const progressRef = useRef(null)
+  const nextMsgIdRef = useRef(1)
 
   // ── Effects ───────────────────────────────────────────────────────────────
 
@@ -114,6 +118,19 @@ function Room({ roomInfo, onLeave, members = [], sendPlaybackSync, onPlaybackSyn
       }
     })
   }, [isHost, onPlaybackSync])
+
+  // Chat: the server broadcasts every message to the whole room INCLUDING the
+  // sender, so this listener is the single place history gets appended from.
+  useEffect(() => {
+    onChatMessage?.(({ from, displayName: senderName, text }) => {
+      setMessages(prev => [...prev, {
+        id: nextMsgIdRef.current++,
+        user: senderName,
+        text,
+        isOwn: from === myId,
+      }])
+    })
+  }, [myId, onChatMessage])
 
   // ── Playback handlers (broadcast when host, local-only otherwise) ────────
 
@@ -173,11 +190,11 @@ function Room({ roomInfo, onLeave, members = [], sendPlaybackSync, onPlaybackSyn
     addSystemMessage(`Now playing: ${file.name}`)
   }
 
-  // ── Chat helpers (local-only for now) ─────────────────────────────────────
+  // ── Chat helpers (transport via Socket.IO chat:message relay) ─────────────
 
   const addSystemMessage = (text) => {
     setMessages(prev => [...prev, {
-      id: Date.now(),
+      id: nextMsgIdRef.current++,
       user: 'System',
       text,
       system: true,
@@ -185,13 +202,9 @@ function Room({ roomInfo, onLeave, members = [], sendPlaybackSync, onPlaybackSyn
   }
 
   const sendMessage = () => {
-    if (!chatInput.trim()) return
-    setMessages(prev => [...prev, {
-      id: Date.now(),
-      user: isHost ? 'Host' : 'You',
-      text: chatInput.trim(),
-      isOwn: true,
-    }])
+    const text = chatInput.trim()
+    if (!text) return
+    sendChat?.(text)
     setChatInput('')
   }
 
