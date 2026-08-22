@@ -1,7 +1,61 @@
+/**
+ * @file useSocket — the client's single Socket.IO connection + room state.
+ *
+ * Owns everything realtime:
+ *   - connection lifecycle (connect/disconnect/error flags)
+ *   - membership list (updated by room:member-joined / room:member-left)
+ *   - host-left notification forwarding
+ *   - playback:sync send (host) and receive (guests)
+ *
+ * The hook is mounted once in App.jsx; components receive slices of it as
+ * props. See src/handlers/*.js in the server for the matching wire format.
+ */
+
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { io } from 'socket.io-client'
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001'
+// Empty by default → Socket.IO connects to the same origin that served this
+// page (Vite dev proxy forwards /socket.io to the signaling server). This
+// makes guests on other devices work without extra config; override with
+// VITE_SERVER_URL if the client and server are hosted on different origins.
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || ''
+const CONNECT_TIMEOUT_MS = 5000
+
+/**
+ * Wait for the socket to reach a connected state, kicking off a fresh
+ * connection attempt if auto-reconnect has given up.
+ * Resolves true once connected, false on timeout/error.
+ */
+function ensureConnected(socket, timeoutMs = CONNECT_TIMEOUT_MS) {
+  if (socket?.connected) return Promise.resolve(true)
+  if (!socket) return Promise.resolve(false)
+
+  return new Promise((resolve) => {
+    const cleanup = () => {
+      clearTimeout(timer)
+      socket.off('connect', onConnect)
+      socket.off('connect_error', onError)
+    }
+    const onConnect = () => {
+      cleanup()
+      resolve(true)
+    }
+    const onError = () => {
+      cleanup()
+      resolve(false)
+    }
+    const timer = setTimeout(() => {
+      cleanup()
+      resolve(false)
+    }, timeoutMs)
+
+    // Revive the socket if it exhausted its reconnection attempts earlier
+    if (!socket.active) socket.connect()
+
+    socket.on('connect', onConnect)
+    socket.on('connect_error', onError)
+  })
+}
 
 /**
  * Custom hook that manages the Socket.IO connection and room lifecycle.
@@ -82,53 +136,59 @@ export default function useSocket() {
   }, [])
 
   // ── Create Room ─────────────────────────────────────────────────────────
-  const createRoom = useCallback((name, code) => {
-    return new Promise((resolve) => {
-      const socket = socketRef.current
-      if (!socket?.connected) {
-        setError('Not connected to server.')
-        return resolve({ ok: false, error: 'Not connected to server.' })
-      }
+  const createRoom = useCallback(async (name, code) => {
+    const socket = socketRef.current
 
-      setConnecting(true)
-      setError(null)
+    setConnecting(true)
+    setError(null)
 
-      socket.emit('room:create', { name, code }, (res) => {
-        setConnecting(false)
-        if (res.ok) {
-          setMembers(res.members)
-          setError(null)
-        } else {
-          setError(res.error)
-        }
-        resolve(res)
-      })
+    if (!(await ensureConnected(socket))) {
+      const msg = 'Could not connect to the server. Is it running?'
+      setConnecting(false)
+      setError(msg)
+      return { ok: false, error: msg }
+    }
+
+    const res = await new Promise((resolve) => {
+      socket.emit('room:create', { name, code }, resolve)
     })
+
+    setConnecting(false)
+    if (res.ok) {
+      setMembers(res.members)
+      setError(null)
+    } else {
+      setError(res.error)
+    }
+    return res
   }, [])
 
   // ── Join Room ───────────────────────────────────────────────────────────
-  const joinRoom = useCallback((code) => {
-    return new Promise((resolve) => {
-      const socket = socketRef.current
-      if (!socket?.connected) {
-        setError('Not connected to server.')
-        return resolve({ ok: false, error: 'Not connected to server.' })
-      }
+  const joinRoom = useCallback(async (code) => {
+    const socket = socketRef.current
 
-      setConnecting(true)
-      setError(null)
+    setConnecting(true)
+    setError(null)
 
-      socket.emit('room:join', { code }, (res) => {
-        setConnecting(false)
-        if (res.ok) {
-          setMembers(res.members)
-          setError(null)
-        } else {
-          setError(res.error)
-        }
-        resolve(res)
-      })
+    if (!(await ensureConnected(socket))) {
+      const msg = 'Could not connect to the server. Is it running?'
+      setConnecting(false)
+      setError(msg)
+      return { ok: false, error: msg }
+    }
+
+    const res = await new Promise((resolve) => {
+      socket.emit('room:join', { code }, resolve)
     })
+
+    setConnecting(false)
+    if (res.ok) {
+      setMembers(res.members)
+      setError(null)
+    } else {
+      setError(res.error)
+    }
+    return res
   }, [])
 
   // ── Leave Room ──────────────────────────────────────────────────────────

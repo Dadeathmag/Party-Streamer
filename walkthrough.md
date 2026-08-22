@@ -17,7 +17,7 @@ We implemented the Node.js / Socket.IO signaling server for **Party Stream** and
 
 ### 2. React Client (`client/`)
 - [client/src/hooks/useSocket.js](file:///c:/Code/Party-Streamer/client/src/hooks/useSocket.js): Custom hook managing Socket.IO connection lifecycle, room creation/joining, callbacks, and playback sync dispatch.
-- [client/vite.config.js](file:///c:/Code/Party-Streamer/client/vite.config.js): Configured proxy for `/socket.io` to target `http://localhost:3001` with WebSocket support.
+- [client/vite.config.js](file:///c:/Code/Party-Streamer/client/vite.config.js): Configured proxy for `/socket.io` to target `http://localhost:3002` with WebSocket support.
 - [client/src/App.jsx](file:///c:/Code/Party-Streamer/client/src/App.jsx): Wired `useSocket` to manage entering/leaving rooms and pass real-time state to pages.
 - [client/src/pages/Home.jsx](file:///c:/Code/Party-Streamer/client/src/pages/Home.jsx) & [Home.css](file:///c:/Code/Party-Streamer/client/src/pages/Home.css): Non-invasive additions for handling server error messages and loading state while connecting.
 - [client/src/pages/Room.jsx](file:///c:/Code/Party-Streamer/client/src/pages/Room.jsx):

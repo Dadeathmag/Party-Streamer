@@ -1,3 +1,14 @@
+/**
+ * @file Root component — owns the two-page flow (home ⇄ room) and the single
+ * shared Socket.IO connection via useSocket().
+ *
+ * Page switching is plain state rather than a router: the app has exactly two
+ * screens, and entering a room requires a successful socket round-trip
+ * (room:create for hosts / room:join for guests) before the swap happens.
+ * The server-authoritative room name replaces the guest's placeholder name
+ * after a successful join.
+ */
+
 import { useState } from 'react'
 import Home from './pages/Home.jsx'
 import Room from './pages/Room.jsx'

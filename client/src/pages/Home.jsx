@@ -1,14 +1,36 @@
+/**
+ * @file Home page — landing screen for hosts and guests.
+ *
+ * Three-step flow driven by the local `mode` state:
+ *   null   → choose "Host a Room" or "Join a Room"
+ *   'host' → room name form; a random 6-char code is generated client-side
+ *   'join' → 6-char code entry form
+ *
+ * Submitting either form calls `onEnterRoom({ name, code, role })`; App.jsx
+ * performs the actual socket round-trip (room:create / room:join) and swaps
+ * to the Room page on success. Connection errors surface via the `error`
+ * prop and are rendered under the active form.
+ */
+
 import { useState } from 'react'
+import { LogoMark, PlayIcon, UsersIcon, ArrowLeftIcon, LogInIcon } from '../components/Icons.jsx'
 import './Home.css'
 
+/**
+ * Generate a random 6-character upper-case room code (e.g. "K3XP9Q").
+ */
+const generateCode = () => Math.random().toString(36).substring(2, 8).toUpperCase()
+
+/**
+ * @param {object} props
+ * @param {(info: { name: string, code: string, role: 'host'|'member' }) => void} props.onEnterRoom
+ * @param {string | null} props.error     last connection/room error to display
+ * @param {boolean} props.connecting      true while create/join is in flight
+ */
 export default function Home({ onEnterRoom, error, connecting }) {
   const [mode, setMode] = useState(null) // null | 'host' | 'join'
   const [roomName, setRoomName] = useState('')
   const [roomCode, setRoomCode] = useState('')
-
-  const generateCode = () => {
-    return Math.random().toString(36).substring(2, 8).toUpperCase()
-  }
 
   const handleHost = () => {
     if (!roomName.trim()) return
@@ -36,16 +58,7 @@ export default function Home({ onEnterRoom, error, connecting }) {
         <header className="home__header">
           <div className="home__logo">
             <div className="home__logo-icon">
-              <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-                <rect width="32" height="32" rx="8" fill="url(#logo-grad)" />
-                <path d="M12 10L22 16L12 22V10Z" fill="white" />
-                <defs>
-                  <linearGradient id="logo-grad" x1="0" y1="0" x2="32" y2="32">
-                    <stop stopColor="#8b5cf6" />
-                    <stop offset="1" stopColor="#22d3ee" />
-                  </linearGradient>
-                </defs>
-              </svg>
+              <LogoMark size={32} />
             </div>
             <span className="home__logo-text">Party Stream</span>
           </div>
@@ -70,9 +83,7 @@ export default function Home({ onEnterRoom, error, connecting }) {
               onClick={() => setMode('host')}
             >
               <div className="home__choice-icon home__choice-icon--host">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polygon points="5 3 19 12 5 21 5 3" />
-                </svg>
+                <PlayIcon size={28} />
               </div>
               <h2 className="home__choice-title">Host a Room</h2>
               <p className="home__choice-desc">Create a watch party and invite friends with a unique code</p>
@@ -85,12 +96,7 @@ export default function Home({ onEnterRoom, error, connecting }) {
               onClick={() => setMode('join')}
             >
               <div className="home__choice-icon home__choice-icon--join">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                  <circle cx="9" cy="7" r="4" />
-                  <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                  <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-                </svg>
+                <UsersIcon size={28} />
               </div>
               <h2 className="home__choice-title">Join a Room</h2>
               <p className="home__choice-desc">Enter a room code to join an existing watch party</p>
@@ -103,10 +109,7 @@ export default function Home({ onEnterRoom, error, connecting }) {
         {mode === 'host' && (
           <div className="home__form-card" id="host-form">
             <button className="home__back" id="btn-back-host" onClick={() => setMode(null)}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="19" y1="12" x2="5" y2="12" />
-                <polyline points="12 19 5 12 12 5" />
-              </svg>
+              <ArrowLeftIcon size={18} />
               Back
             </button>
 
@@ -137,9 +140,7 @@ export default function Home({ onEnterRoom, error, connecting }) {
               onClick={handleHost}
               disabled={!roomName.trim() || connecting}
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <polygon points="5 3 19 12 5 21 5 3" />
-              </svg>
+              <PlayIcon size={18} strokeWidth={2.5} />
               {connecting ? 'Creating…' : 'Start Party'}
             </button>
 
@@ -151,10 +152,7 @@ export default function Home({ onEnterRoom, error, connecting }) {
         {mode === 'join' && (
           <div className="home__form-card" id="join-form">
             <button className="home__back" id="btn-back-join" onClick={() => setMode(null)}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="19" y1="12" x2="5" y2="12" />
-                <polyline points="12 19 5 12 12 5" />
-              </svg>
+              <ArrowLeftIcon size={18} />
               Back
             </button>
 
@@ -187,11 +185,7 @@ export default function Home({ onEnterRoom, error, connecting }) {
               onClick={handleJoin}
               disabled={!roomCode.trim() || connecting}
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-                <polyline points="10 17 15 12 10 7" />
-                <line x1="15" y1="12" x2="3" y2="12" />
-              </svg>
+              <LogInIcon size={18} />
               {connecting ? 'Joining…' : 'Join Party'}
             </button>
 

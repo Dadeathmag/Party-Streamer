@@ -42,7 +42,7 @@ Implement the full signaling server. The server maintains an in-memory `rooms` M
 
 #### [NEW] [useSocket.js](file:///c:/Code/Party-Streamer/client/src/hooks/useSocket.js)
 A custom React hook that encapsulates all Socket.IO logic:
-- Connects to `http://localhost:3001` on mount, disconnects on unmount
+- Connects to `http://localhost:3002` on mount, disconnects on unmount
 - Exposes: `socket`, `connected`, `members`, `error`
 - Methods: `createRoom(name, code)`, `joinRoom(code)`, `leaveRoom()`, `sendPlaybackSync(action, time)`
 - Listens for `room:member-joined`, `room:member-left`, `room:host-left`, `playback:sync`
@@ -73,7 +73,7 @@ A custom React hook that encapsulates all Socket.IO logic:
 ### Dev Tooling
 
 #### [MODIFY] [vite.config.js](file:///c:/Code/Party-Streamer/client/vite.config.js)
-- Add a proxy entry so `/socket.io` requests are forwarded to `http://localhost:3001` during dev — this avoids CORS issues without any extra config
+- Add a proxy entry so `/socket.io` requests are forwarded to `http://localhost:3002` during dev — this avoids CORS issues without any extra config
 
 ---
 
@@ -87,7 +87,7 @@ A custom React hook that encapsulates all Socket.IO logic:
 > I'll default to **(A)** unless you say otherwise.
 
 > [!NOTE]
-> **Server port:** I'll use port `3001` for the signaling server (Vite runs on `5173`). Let me know if you prefer a different port.
+> **Server port:** The signaling server runs on port `3002` (Vite runs on `5173`). Override with the `PORT` env var; point the client elsewhere with `VITE_SERVER_URL`.
 
 ## Verification Plan
 

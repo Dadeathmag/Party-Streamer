@@ -1,13 +1,108 @@
+const { spawn } = require('child_process');
+const http = require('http');
 const { io } = require('socket.io-client');
 
-const SERVER_URL = 'http://localhost:3001';
+// ── Config ──────────────────────────────────────────────────────────────────
+const PORT = process.env.PORT || 3002;
+const SERVER_URL = `http://localhost:${PORT}`;
+const STARTUP_TIMEOUT_MS = 10000;
+const CONNECT_TIMEOUT_MS = 5000;
+const TEST_WATCHDOG_MS = 30000;
+
+let serverProcess = null;
+
+function cleanup() {
+  if (serverProcess) {
+    serverProcess.kill();
+    serverProcess = null;
+  }
+}
+process.on('exit', cleanup);
+
+// ── Server lifecycle helpers ────────────────────────────────────────────────
+
+/**
+ * Single health probe. Resolves true only if /health answers 200.
+ */
+function probeHealth() {
+  return new Promise((resolve) => {
+    const req = http.get(`${SERVER_URL}/health`, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(1000, () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+/**
+ * Poll /health until the server responds or the deadline passes.
+ */
+async function waitForServer(timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await probeHealth()) return;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(
+    `Signaling server did not become ready at ${SERVER_URL} within ${timeoutMs}ms`
+  );
+}
+
+/**
+ * Start server.js as a child process unless something is already listening.
+ */
+async function startServerIfNeeded() {
+  if (await probeHealth()) {
+    console.log(`Reusing already-running server at ${SERVER_URL}`);
+    return;
+  }
+
+  console.log(`Starting signaling server on port ${PORT}...`);
+  serverProcess = spawn(process.execPath, ['server.js'], {
+    cwd: __dirname,
+    env: process.env,
+    stdio: 'inherit',
+  });
+
+  serverProcess.on('error', (err) => {
+    console.error('Failed to spawn server process:', err.message);
+    process.exit(1);
+  });
+
+  await waitForServer(STARTUP_TIMEOUT_MS);
+  console.log('Server is up.');
+}
+
+/**
+ * Connect a socket with a hard timeout so we never hang forever.
+ */
+function connectSocket(label) {
+  const socket = io(SERVER_URL);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label}: timed out connecting to ${SERVER_URL}`));
+    }, CONNECT_TIMEOUT_MS);
+
+    socket.on('connect', () => {
+      clearTimeout(timer);
+      resolve(socket);
+    });
+    socket.on('connect_error', (err) => {
+      clearTimeout(timer);
+      reject(new Error(`${label}: connect_error — ${err.message}`));
+    });
+  });
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
 
 async function runTests() {
-  console.log('--- Starting Signaling Server Integration Tests ---');
-  
   // 1. Connect Host
-  const hostSocket = io(SERVER_URL);
-  await new Promise((resolve) => hostSocket.on('connect', resolve));
+  const hostSocket = await connectSocket('Host');
   console.log('✓ Host connected with ID:', hostSocket.id);
 
   // 2. Create Room
@@ -21,8 +116,7 @@ async function runTests() {
   }
 
   // 3. Connect Guest
-  const guestSocket = io(SERVER_URL);
-  await new Promise((resolve) => guestSocket.on('connect', resolve));
+  const guestSocket = await connectSocket('Guest');
   console.log('✓ Guest connected with ID:', guestSocket.id);
 
   // Set up listener on Host for member joined
@@ -93,11 +187,30 @@ async function runTests() {
   await guestHostLeftPromise;
 
   guestSocket.disconnect();
-  console.log('--- All Signaling Server Tests Passed! ---');
-  process.exit(0);
 }
 
-runTests().catch((err) => {
-  console.error('Test failed:', err);
+// ── Main ────────────────────────────────────────────────────────────────────
+
+async function main() {
+  console.log('--- Starting Signaling Server Integration Tests ---');
+
+  // Watchdog: never let a stuck promise hang the run indefinitely.
+  const watchdog = setTimeout(() => {
+    console.error(`Test suite timed out after ${TEST_WATCHDOG_MS}ms`);
+    process.exit(1);
+  }, TEST_WATCHDOG_MS);
+
+  try {
+    await startServerIfNeeded();
+    await runTests();
+    clearTimeout(watchdog);
+    console.log('--- All Signaling Server Tests Passed! ---');
+  } finally {
+    if (!process.exitCode) cleanup();
+  }
+}
+
+main().catch((err) => {
+  console.error('Test failed:', err?.message ?? err);
   process.exit(1);
 });
