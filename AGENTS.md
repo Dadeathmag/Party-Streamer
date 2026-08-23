@@ -13,8 +13,11 @@ proxy video.
 Current status: Phases 1–2 complete (UI + signaling, integration-tested), plus
 early Phase 4 mechanics (`playback:sync` relayed via Socket.IO, host-only) and
 chat relayed via Socket.IO (`chat:message`, membership-checked). Members now
-carry client-supplied display names. **Next task is Phase 3** — see bottom of
-this file. No P2P media yet.
+carry client-supplied display names. **Phase 3 (basic WebRTC) is done** — the
+host holds an `RTCPeerConnection` + DataChannel toward each viewer, and the
+selected video is distributed as P2P chunks with progressive MSE playback
+(early Phase 5 mechanics). **Next task is Phase 4 proper** — see bottom of
+this file. No peer forwarding yet.
 
 ## Repository Map
 
@@ -43,15 +46,36 @@ client/                          React 19 + Vite, ESM
 ├── vite.config.js               dev proxy: /socket.io → http://localhost:3002
 └── src/
     ├── main.jsx                 entrypoint (StrictMode + createRoot)
-    ├── App.jsx                  two-page flow (home ⇄ room) + single useSocket() mount
+    ├── App.jsx                  two-page flow (home ⇄ room) + single useSocket()
+    │                            and usePeerNetwork() mount
     ├── hooks/
-    │   └── useSocket.js         ALL Socket.IO logic: connection lifecycle, room
+    │   ├── useSocket.js         ALL Socket.IO logic: connection lifecycle, room
     │                            create/join/leave, members state, playback sync
-    │                            send/receive, chat send/receive, onHostLeft callback
-    ├── lib/formatTime.js        pure helpers
+    │                            send/receive, chat send/receive, onHostLeft,
+    │                            signal:* passthrough (sendSignal / onSignal)
+    │   └── usePeerNetwork.js    P2P glue: one Peer per remote member reconciled
+    │                            against the members list; host chunked-upload of
+    │                            the selected video (late joiners auto-served);
+    │                            guest FileReceiver wiring + transfer status
+    ├── network/
+    │   ├── roomProtocol.js      transport-independent DataChannel message types
+    │   │                        (FILE_OFFER/ACCEPT/COMPLETE/ABORT) + chunk/backpressure
+    │   │                        constants; JSON strings = control, ArrayBuffer = bytes
+    │   ├── peer.js              per-peer RTCPeerConnection wrapper (STUN, host is
+    │                            permanent offerer, reliable ordered DataChannel,
+    │                            ICE queueing, drain-wait backpressure helper)
+    │   ├── fileSender.js        lazy File.slice() streaming with bufferedAmount
+    │                            high/low-water pause-resume, accept timeout, abort
+    │   └── fileReceiver.js      handshake counterpart: progressive MSE append or
+    │                            Blob fallback assembly → object URL for <video>
+    ├── lib/
+    │   ├── formatTime.js        pure helpers
+    │   └── msePlayer.js         MediaSource wrapper (isTypeSupported gate, queued
+    │                            appendBuffer on updateend, endOfStream, destroy)
     ├── components/              presentational only:
     │   ├── Icons.jsx            inline SVG set (currentColor, size prop)
-    │   ├── VideoStage.jsx       <video> / empty state + members overlay
+    │   ├── VideoStage.jsx       always-mounted <video> + empty-state/receiving
+    │   │                        overlay + members popup
     │   ├── PlayerControls.jsx   seek bar, transport buttons, volume, time
     │   ├── ChatPanel.jsx        chat sidebar (LOCAL-ONLY state for now)
     │   └── MembersPopup.jsx     member list overlay (fed by live members prop)
@@ -61,7 +85,8 @@ client/                          React 19 + Vite, ESM
         │                        networking to App
         └── Room.jsx             orchestrator: owns playback state + refs, applies
                                  incoming sync to local <video>, emits sync on
-                                 host interactions
+                                 host interactions, hands file to sendFile() and
+                                 registers the video element with usePeerNetwork
 ```
 
 ## Wire Format Reference (Socket.IO)
@@ -188,9 +213,14 @@ Config (env vars): `PORT` (server, default 3002), `CLIENT_ORIGIN`
 4. Close host tab → guest receives `room:host-left` and returns home cleanly.
 5. Host selects local video, plays/pauses/seeks → guest's video mirrors the
    action (currently over the Socket.IO relay).
+6. With the video still selected, watch the guest tab: "Receiving …%" overlay
+   appears, then the video becomes playable (MSE) or assembles and swaps in
+   (Blob fallback for non-MSE formats). A guest joining AFTER selection gets
+   the file automatically once its DataChannel opens.
 
 Automated equivalent: `npm test --prefix server` covers the whole event
 surface including non-host sync rejection and host-disconnect teardown.
+Client P2P transfer has no automated tests yet — verify manually per step 6.
 
 ## Known Gaps / Planned Fixes
 
@@ -203,23 +233,24 @@ Do not silently change these without updating project.md's deviation list:
    check to join validation.
 3. **Chat relays over Socket.IO** — works end-to-end today but moves to
    DataChannels in Phase 7 (payload shape already transport-independent).
-4. **Playback sync rides the signaling transport** — migrate onto DataChannels
-   once Phase 3 exists.
+4. **Playback sync rides the signaling transport** — migrate onto
+   DataChannels (Phase 4 proper; the channels already exist).
 5. **No shareable room URLs** (`/room/:code`) yet.
+6. **Video transfer memory ceiling** — guests retain every chunk until
+   completion (enables transparent MSE→Blob fallback), so RAM use peaks at
+   ~file size; multi-GB files are impractical until chunks spill to OPFS.
+7. **Seeking beyond buffered data stalls** on guests mid-transfer (no range
+   requests yet); full seek works after FILE_COMPLETE.
 
-## Next Task: Phase 3 — Basic WebRTC
+## Next Task: Phase 4 proper — Playback sync over DataChannels
 
-Scope (nothing more):
+Scope:
 
-1. Introduce `client/src/network/peer.js` (peer connection manager) +
-   `client/src/network/roomProtocol.js` (message types).
-2. Use the existing `signal:offer` / `signal:answer` / `signal:ice-candidate`
-   relay — no new server events needed.
-3. Host initiates an `RTCPeerConnection` toward each viewer with STUN
-   (`stun:stun.l.google.com:19302`); negotiate one reliable DataChannel.
-4. Verify end-to-end: host sends `"Hello from host"` through the DataChannel;
-   viewer logs/receives it.
+1. Extend `network/roomProtocol.js` with PLAY / PAUSE / SEEK message types.
+2. Host broadcasts sync commands over each viewer's DataChannel instead of
+   the `playback:sync` Socket.IO relay; server relay stays temporarily as
+   fallback until parity is proven.
+3. Drift handling: periodic host time beacons, soft-correct viewers.
 
-Success condition: two browsers establish a direct connection and exchange a
-DataChannel message. Do NOT start video transfer (Phase 5), forwarding
-(Phase 6), chat transport (Phase 7), or voice (Phase 8) until this works.
+Do NOT start peer forwarding (Phase 6), chat transport migration (Phase 7),
+or voice (Phase 8) before this works.

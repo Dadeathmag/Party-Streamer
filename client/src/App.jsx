@@ -13,6 +13,7 @@ import { useState } from 'react'
 import Home from './pages/Home.jsx'
 import Room from './pages/Room.jsx'
 import useSocket from './hooks/useSocket.js'
+import usePeerNetwork from './hooks/usePeerNetwork.js'
 import './App.css'
 
 function App() {
@@ -20,6 +21,7 @@ function App() {
   const [roomInfo, setRoomInfo] = useState(null) // { name, code, role }
 
   const socket = useSocket()
+  const peerNet = usePeerNetwork(socket)
 
   const handleEnterRoom = async (info) => {
     const { displayName, name, code, role } = info
@@ -67,6 +69,11 @@ function App() {
           onMemberJoined={socket.onMemberJoined}
           onMemberLeft={socket.onMemberLeft}
           onHostLeft={socket.onHostLeft}
+          sendFile={peerNet.sendFile}
+          registerVideoElement={peerNet.registerVideoElement}
+          transferStatus={peerNet.transferStatus}
+          onRemoteVideoReady={peerNet.onRemoteVideoReady}
+          onTransferError={peerNet.onTransferError}
         />
       )}
     </>

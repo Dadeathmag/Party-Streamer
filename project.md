@@ -104,9 +104,9 @@ among active rooms. **Target rule:** the *server* generates the code.
 | 1     | UI: Home (host/join), Room (video, controls, chat, members)  | ✅ Done |
 | 2     | Signaling: Node/Socket.IO server, room create/join/leave, disconnect handling, participant tracking, signal relay | ✅ Done — integration-tested |
 | 2.5   | Playback sync relay over Socket.IO (`playback:sync`, host-only, ownership verified server-side) | ✅ Done — early Phase 4 mechanics over the wrong transport; migrate to DataChannels in Phase 4 proper |
-| 3     | Basic WebRTC: `RTCPeerConnection`, STUN, offer/answer/ICE, DataChannel | ⬜ **Next up** |
+| 3     | Basic WebRTC: `RTCPeerConnection`, STUN, offer/answer/ICE, DataChannel | ✅ Done — host holds one PC + DataChannel per viewer (landed together with early Phase 5 transfer, which exercises it end-to-end) |
 | 4     | Playback sync on P2P: host PLAY/PAUSE/SEEK/SKIP via protocol messages; drift handling | ◐ Partial (relay exists; not yet P2P) |
-| 5     | Basic video P2P: evaluate media tracks vs MSE vs WebTorrent vs chunked DataChannel; browser memory limits | ⬜ Planned |
+| 5     | Basic video P2P: evaluate media tracks vs MSE vs WebTorrent vs chunked DataChannel; browser memory limits | ◐ Partial — chunked DataChannel chosen: host streams the selected file to every viewer with progressive MSE playback and a transparent Blob fallback for non-MSE formats. No range requests / OPFS spool yet |
 | 6     | Peer forwarding: small distribution tree with configurable upload slots | ⬜ Planned |
 | 7     | Chat over DataChannels (chat currently Socket.IO-relayed)     | ⬜ Planned |
 | 8     | Voice: `getUserMedia()` + WebRTC audio                        | ⬜ Planned |
@@ -207,3 +207,9 @@ These are deliberate or pending corrections — see AGENTS.md before changing th
    Socket.IO, membership-checked, never stored) instead of DataChannels —
    acceptable bridge until Phase 7; payload shape is transport-independent.
 6. **No shareable room URLs yet** (`/room/:code` routing planned but not built).
+7. **Video transfer (Phase 5 partial) limitations**: guests retain every
+   chunk in RAM until completion so a mid-stream MSE failure can fall back
+   to Blob assembly transparently — memory peaks around file size. Guests
+   cannot seek past buffered data mid-transfer (no range requests yet).
+   MSE progressive playback only applies to fMP4/WebM byte streams; other
+   formats play after full assembly via the Blob path.

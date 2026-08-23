@@ -8,6 +8,9 @@
  *   - playback:sync send (host) and receive (guests)
  *   - chat:message send and receive (echoed back to the sender, so history
  *     is appended from a single source; mark "own" via myId === msg.from)
+ *   - signal:* passthrough for WebRTC signaling (see usePeerNetwork):
+ *     three server events fan into one onSignal callback; sendSignal maps a
+ *     normalized kind back onto the matching wire event.
  *
  * The hook is mounted once in App.jsx; components receive slices of it as
  * props. See src/handlers/*.js in the server for the matching wire format.
@@ -22,6 +25,14 @@ import { io } from 'socket.io-client'
 // VITE_SERVER_URL if the client and server are hosted on different origins.
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || ''
 const CONNECT_TIMEOUT_MS = 5000
+
+// WebRTC signaling event name ⇄ payload key + normalized kind (see
+// server/src/handlers/signalHandlers.js for the wire format).
+const SIGNAL_KINDS = [
+  { kind: 'offer', key: 'offer' },
+  { kind: 'answer', key: 'answer' },
+  { kind: 'ice-candidate', key: 'candidate' },
+]
 
 /**
  * Wait for the socket to reach a connected state, kicking off a fresh
@@ -81,6 +92,8 @@ function ensureConnected(socket, timeoutMs = CONNECT_TIMEOUT_MS) {
  *   onMemberLeft(callback)   — register a listener for other members leaving
  *                              (receives their displayName)
  *   onHostLeft(callback)     — register a listener for host-left events
+ *   sendSignal(to, kind, payload) — relay WebRTC signaling to a peer
+ *   onSignal(callback)       — incoming signaling: { from, kind, payload }
  */
 export default function useSocket() {
   const socketRef = useRef(null)
@@ -96,6 +109,7 @@ export default function useSocket() {
   const memberJoinedCbRef = useRef(null)
   const memberLeftCbRef = useRef(null)
   const hostLeftCbRef = useRef(null)
+  const signalCbRef = useRef(null)
 
   // ── Initialise socket once on mount ──────────────────────────────────────
   useEffect(() => {
@@ -153,6 +167,13 @@ export default function useSocket() {
     socket.on('chat:message', (data) => {
       chatMessageCbRef.current?.(data)
     })
+
+    // ── WebRTC signaling relay (blind pass-through, see signalHandlers) ──
+    for (const { kind, key } of SIGNAL_KINDS) {
+      socket.on(`signal:${kind}`, (data) => {
+        signalCbRef.current?.({ from: data.from, kind, payload: data[key] })
+      })
+    }
 
     return () => {
       socket.disconnect()
@@ -239,6 +260,15 @@ export default function useSocket() {
     socket.emit('chat:message', { text })
   }, [])
 
+  // ── WebRTC signaling (outgoing) ─────────────────────────────────────────
+  const sendSignal = useCallback((to, kind, payload) => {
+    const socket = socketRef.current
+    if (!socket?.connected || !to) return
+    const entry = SIGNAL_KINDS.find((k) => k.kind === kind)
+    if (!entry) return
+    socket.emit(`signal:${kind}`, { to, [entry.key]: payload })
+  }, [])
+
   // ── Callback registration ──────────────────────────────────────────────
   const onPlaybackSync = useCallback((cb) => {
     playbackSyncCbRef.current = cb
@@ -260,6 +290,10 @@ export default function useSocket() {
     hostLeftCbRef.current = cb
   }, [])
 
+  const onSignal = useCallback((cb) => {
+    signalCbRef.current = cb
+  }, [])
+
   return {
     connected,
     myId,
@@ -276,5 +310,7 @@ export default function useSocket() {
     onMemberJoined,
     onMemberLeft,
     onHostLeft,
+    sendSignal,
+    onSignal,
   }
 }
