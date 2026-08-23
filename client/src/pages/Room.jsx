@@ -12,6 +12,12 @@
  * sendPlaybackSync() which the server relays to every other member; guests
  * receive 'playback:sync' via onPlaybackSync and apply it to their local
  * <video> element. Guests' own controls work locally but are never broadcast.
+ *
+ * Media distribution: when the host selects a file it is ALSO streamed to
+ * every connected viewer over WebRTC DataChannels (chunked, see
+ * network/fileSender.js). Guests play it progressively via MSE, with a Blob
+ * fallback for formats MSE can't ingest. All networking flows through
+ * props provided by usePeerNetwork (mounted in App.jsx).
  */
 
 import { useState, useRef, useEffect } from 'react'
@@ -22,19 +28,31 @@ import ChatPanel from '../components/ChatPanel.jsx'
 import './Room.css'
 
 const SAMPLE_MESSAGES = [
-  { id: 1, user: 'System', text: 'Welcome to the party! 🎉', system: true },
+  { id: 0, user: 'System', text: 'Welcome to the party! 🎉', system: true },
 ]
 
 /**
  * @param {object} props
- * @param {{ name: string, code: string, role: 'host'|'member' }} props.roomInfo
+ * @param {{ name: string, code: string, role: 'host'|'member', displayName: string }} props.roomInfo
  * @param {() => void} props.onLeave
  * @param {Array<{ socketId: string, displayName: string, role: string }>} props.members
+ * @param {string | null} props.myId   this client's socket id (marks own chat msgs)
  * @param {(action: string, time: number) => void} props.sendPlaybackSync  host only
  * @param {(cb: (data: { action: string, time: number }) => void) => void} props.onPlaybackSync
+ * @param {(text: string) => void} props.sendChat
+ * @param {(cb: (data: { from: string, displayName: string, text: string, ts: number }) => void) => void} props.onChatMessage
+ * @param {(cb: (displayName: string) => void) => void} props.onMemberJoined
+ * @param {(cb: (displayName: string) => void) => void} props.onMemberLeft
  * @param {(cb: () => void) => void} props.onHostLeft
+ * @param {(file: File) => void} props.sendFile   host: stream file to viewers
+ * @param {(el: HTMLVideoElement|null) => void} props.registerVideoElement
+ * @param {{ direction: 'send'|'receive', name: string, pct: number } | null}
+ *        props.transferStatus
+ * @param {(cb: (info: { url: string | null, name: string }) => void) => void}
+ *        props.onRemoteVideoReady   guest: streamed video is playable
+ * @param {(cb: (err: Error) => void) => void} props.onTransferError
  */
-function Room({ roomInfo, onLeave, members = [], sendPlaybackSync, onPlaybackSync, onHostLeft }) {
+function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlaybackSync, sendChat, onChatMessage, onMemberJoined, onMemberLeft, onHostLeft, sendFile, registerVideoElement, transferStatus, onRemoteVideoReady, onTransferError }) {
   const { name, code, role } = roomInfo
   const isHost = role === 'host'
 
@@ -48,6 +66,7 @@ function Room({ roomInfo, onLeave, members = [], sendPlaybackSync, onPlaybackSyn
   const [isMuted, setIsMuted] = useState(false)
   const [videoSrc, setVideoSrc] = useState(null)
   const [videoName, setVideoName] = useState('')
+  const [mediaReady, setMediaReady] = useState(false)
   const [showMembers, setShowMembers] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
@@ -57,20 +76,35 @@ function Room({ roomInfo, onLeave, members = [], sendPlaybackSync, onPlaybackSyn
   const chatEndRef = useRef(null)
   const fileInputRef = useRef(null)
   const progressRef = useRef(null)
+  const nextMsgIdRef = useRef(1)
 
   // ── Effects ───────────────────────────────────────────────────────────────
+
+  // Chat helper (declared early: several effects below append system lines).
+  const addSystemMessage = (text) => {
+    setMessages(prev => [...prev, {
+      id: nextMsgIdRef.current++,
+      user: 'System',
+      text,
+      system: true,
+    }])
+  }
 
   // Auto-scroll chat to the latest message.
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Track video time/duration/ended events for the controls UI.
+  // Track video time/duration/ended events for the controls UI. The <video>
+  // element is always mounted (VideoStage), so listeners attach once.
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
     const handleTime = () => setCurrentTime(video.currentTime)
-    const handleDuration = () => setDuration(video.duration)
+    const handleDuration = () => {
+      setDuration(video.duration)
+      setMediaReady(true)
+    }
     const handleEnded = () => setIsPlaying(false)
     video.addEventListener('timeupdate', handleTime)
     video.addEventListener('loadedmetadata', handleDuration)
@@ -80,7 +114,13 @@ function Room({ roomInfo, onLeave, members = [], sendPlaybackSync, onPlaybackSyn
       video.removeEventListener('loadedmetadata', handleDuration)
       video.removeEventListener('ended', handleEnded)
     }
-  }, [videoSrc])
+  }, [])
+
+  // Hand the <video> element to the P2P layer (guest MediaSource attach).
+  useEffect(() => {
+    registerVideoElement?.(videoRef.current)
+    return () => registerVideoElement?.(null)
+  }, [registerVideoElement])
 
   // Guests: bounce back to home when the host leaves.
   useEffect(() => {
@@ -114,6 +154,36 @@ function Room({ roomInfo, onLeave, members = [], sendPlaybackSync, onPlaybackSyn
       }
     })
   }, [isHost, onPlaybackSync])
+
+  // Guests: a streamed video from the host became playable (or finished
+  // assembling). url === null means MSE is already wired to our <video>.
+  useEffect(() => {
+    onRemoteVideoReady?.(({ url, name }) => {
+      if (url) setVideoSrc(url)
+      setVideoName(name)
+      setIsPlaying(false)
+      setCurrentTime(0)
+      addSystemMessage(`Now playing: ${name}`)
+    })
+  }, [onRemoteVideoReady])
+
+  // Both roles: surface P2P transfer failures in chat.
+  useEffect(() => {
+    onTransferError?.((err) => addSystemMessage(`Video transfer failed: ${err.message}`))
+  }, [onTransferError])
+
+  // Chat: the server broadcasts every message to the whole room INCLUDING the
+  // sender, so this listener is the single place history gets appended from.
+  useEffect(() => {
+    onChatMessage?.(({ from, displayName: senderName, text }) => {
+      setMessages(prev => [...prev, {
+        id: nextMsgIdRef.current++,
+        user: senderName,
+        text,
+        isOwn: from === myId,
+      }])
+    })
+  }, [myId, onChatMessage])
 
   // ── Playback handlers (broadcast when host, local-only otherwise) ────────
 
@@ -170,28 +240,23 @@ function Room({ roomInfo, onLeave, members = [], sendPlaybackSync, onPlaybackSyn
     setVideoName(file.name)
     setIsPlaying(false)
     setCurrentTime(0)
+    setMediaReady(false)
     addSystemMessage(`Now playing: ${file.name}`)
+    // Also distribute the file itself to connected viewers (P2P chunks).
+    sendFile?.(file)
+    e.target.value = '' // allow re-selecting the same file later
   }
 
-  // ── Chat helpers (local-only for now) ─────────────────────────────────────
-
-  const addSystemMessage = (text) => {
-    setMessages(prev => [...prev, {
-      id: Date.now(),
-      user: 'System',
-      text,
-      system: true,
-    }])
-  }
+  // Chat: system lines when other members join or leave the party.
+  useEffect(() => {
+    onMemberJoined?.((joinedName) => addSystemMessage(`${joinedName} joined the party`))
+    onMemberLeft?.((leftName) => addSystemMessage(`${leftName} left the party`))
+  }, [onMemberJoined, onMemberLeft])
 
   const sendMessage = () => {
-    if (!chatInput.trim()) return
-    setMessages(prev => [...prev, {
-      id: Date.now(),
-      user: isHost ? 'Host' : 'You',
-      text: chatInput.trim(),
-      isOwn: true,
-    }])
+    const text = chatInput.trim()
+    if (!text) return
+    sendChat?.(text)
     setChatInput('')
   }
 
@@ -206,6 +271,15 @@ function Room({ roomInfo, onLeave, members = [], sendPlaybackSync, onPlaybackSyn
   }
 
   const pct = duration ? (currentTime / duration) * 100 : 0
+
+  const incomingLabel =
+    transferStatus?.direction === 'receive'
+      ? `Receiving "${transferStatus.name}"… ${Math.round(transferStatus.pct)}%`
+      : null
+  const sendingLabel =
+    transferStatus?.direction === 'send'
+      ? `Streaming "${transferStatus.name}" to viewers… ${Math.round(transferStatus.pct)}%`
+      : null
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -279,12 +353,20 @@ function Room({ roomInfo, onLeave, members = [], sendPlaybackSync, onPlaybackSyn
             videoRef={videoRef}
             videoSrc={videoSrc}
             videoName={videoName}
+            mediaReady={mediaReady}
+            incomingLabel={incomingLabel}
             isHost={isHost}
             showMembers={showMembers}
             members={members}
             onSelectVideo={() => fileInputRef.current?.click()}
             onTogglePlay={togglePlay}
           />
+
+          {sendingLabel && (
+            <div className="room__transfer-status" id="transfer-status" role="status">
+              {sendingLabel}
+            </div>
+          )}
 
           <PlayerControls
             progressRef={progressRef}

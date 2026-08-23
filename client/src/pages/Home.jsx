@@ -3,12 +3,13 @@
  *
  * Three-step flow driven by the local `mode` state:
  *   null   → choose "Host a Room" or "Join a Room"
- *   'host' → room name form; a random 6-char code is generated client-side
- *   'join' → 6-char code entry form
+ *   'host' → your-name + room-name form; a random 6-char code is generated
+ *            client-side (see Known Gaps)
+ *   'join' → your-name + 6-char code entry form
  *
- * Submitting either form calls `onEnterRoom({ name, code, role })`; App.jsx
- * performs the actual socket round-trip (room:create / room:join) and swaps
- * to the Room page on success. Connection errors surface via the `error`
+ * Submitting either form calls `onEnterRoom({ displayName, name, code, role })`;
+ * App.jsx performs the actual socket round-trip (room:create / room:join) and
+ * swaps to the Room page on success. Connection errors surface via the `error`
  * prop and are rendered under the active form.
  */
 
@@ -23,24 +24,25 @@ const generateCode = () => Math.random().toString(36).substring(2, 8).toUpperCas
 
 /**
  * @param {object} props
- * @param {(info: { name: string, code: string, role: 'host'|'member' }) => void} props.onEnterRoom
+ * @param {(info: { displayName: string, name: string, code: string, role: 'host'|'member' }) => void} props.onEnterRoom
  * @param {string | null} props.error     last connection/room error to display
  * @param {boolean} props.connecting      true while create/join is in flight
  */
 export default function Home({ onEnterRoom, error, connecting }) {
   const [mode, setMode] = useState(null) // null | 'host' | 'join'
+  const [yourName, setYourName] = useState('')
   const [roomName, setRoomName] = useState('')
   const [roomCode, setRoomCode] = useState('')
 
   const handleHost = () => {
-    if (!roomName.trim()) return
+    if (!yourName.trim() || !roomName.trim()) return
     const code = generateCode()
-    onEnterRoom({ name: roomName.trim(), code, role: 'host' })
+    onEnterRoom({ displayName: yourName.trim(), name: roomName.trim(), code, role: 'host' })
   }
 
   const handleJoin = () => {
-    if (!roomCode.trim()) return
-    onEnterRoom({ name: `Room ${roomCode.trim()}`, code: roomCode.trim().toUpperCase(), role: 'member' })
+    if (!yourName.trim() || !roomCode.trim()) return
+    onEnterRoom({ displayName: yourName.trim(), name: `Room ${roomCode.trim()}`, code: roomCode.trim().toUpperCase(), role: 'member' })
   }
 
   return (
@@ -120,6 +122,20 @@ export default function Home({ onEnterRoom, error, connecting }) {
             </div>
 
             <div className="home__input-group">
+              <label className="home__label" htmlFor="input-your-name">Your Name</label>
+              <input
+                id="input-your-name"
+                className="home__input"
+                type="text"
+                placeholder="e.g. Alex"
+                value={yourName}
+                onChange={(e) => setYourName(e.target.value)}
+                maxLength={24}
+                autoFocus
+              />
+            </div>
+
+            <div className="home__input-group">
               <label className="home__label" htmlFor="input-room-name">Room Name</label>
               <input
                 id="input-room-name"
@@ -129,7 +145,6 @@ export default function Home({ onEnterRoom, error, connecting }) {
                 value={roomName}
                 onChange={(e) => setRoomName(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleHost()}
-                autoFocus
                 maxLength={40}
               />
             </div>
@@ -138,7 +153,7 @@ export default function Home({ onEnterRoom, error, connecting }) {
               className="home__btn home__btn--primary"
               id="btn-create-room"
               onClick={handleHost}
-              disabled={!roomName.trim() || connecting}
+              disabled={!yourName.trim() || !roomName.trim() || connecting}
             >
               <PlayIcon size={18} strokeWidth={2.5} />
               {connecting ? 'Creating…' : 'Start Party'}
@@ -163,6 +178,19 @@ export default function Home({ onEnterRoom, error, connecting }) {
             </div>
 
             <div className="home__input-group">
+              <label className="home__label" htmlFor="input-your-name">Your Name</label>
+              <input
+                id="input-your-name"
+                className="home__input"
+                type="text"
+                placeholder="e.g. Alex"
+                value={yourName}
+                onChange={(e) => setYourName(e.target.value)}
+                maxLength={24}
+              />
+            </div>
+
+            <div className="home__input-group">
               <label className="home__label" htmlFor="input-room-code">Room Code</label>
               <input
                 id="input-room-code"
@@ -172,7 +200,6 @@ export default function Home({ onEnterRoom, error, connecting }) {
                 value={roomCode}
                 onChange={(e) => setRoomCode(e.target.value.toUpperCase().slice(0, 6))}
                 onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
-                autoFocus
                 maxLength={6}
                 spellCheck={false}
                 autoComplete="off"
@@ -183,7 +210,7 @@ export default function Home({ onEnterRoom, error, connecting }) {
               className="home__btn home__btn--secondary"
               id="btn-join-room"
               onClick={handleJoin}
-              disabled={!roomCode.trim() || connecting}
+              disabled={!yourName.trim() || !roomCode.trim() || connecting}
             >
               <LogInIcon size={18} />
               {connecting ? 'Joining…' : 'Join Party'}

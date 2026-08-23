@@ -13,6 +13,7 @@ import { useState } from 'react'
 import Home from './pages/Home.jsx'
 import Room from './pages/Room.jsx'
 import useSocket from './hooks/useSocket.js'
+import usePeerNetwork from './hooks/usePeerNetwork.js'
 import './App.css'
 
 function App() {
@@ -20,15 +21,16 @@ function App() {
   const [roomInfo, setRoomInfo] = useState(null) // { name, code, role }
 
   const socket = useSocket()
+  const peerNet = usePeerNetwork(socket)
 
   const handleEnterRoom = async (info) => {
-    const { name, code, role } = info
+    const { displayName, name, code, role } = info
 
     if (role === 'host') {
-      const res = await socket.createRoom(name, code)
+      const res = await socket.createRoom(name, code, displayName)
       if (!res.ok) return // error is set inside the hook
     } else {
-      const res = await socket.joinRoom(code)
+      const res = await socket.joinRoom(code, displayName)
       if (!res.ok) return
       // Use the server-authoritative room name
       info = { ...info, name: res.name }
@@ -59,9 +61,19 @@ function App() {
           onLeave={handleLeaveRoom}
           members={socket.members}
           connected={socket.connected}
+          myId={socket.myId}
           sendPlaybackSync={socket.sendPlaybackSync}
           onPlaybackSync={socket.onPlaybackSync}
+          sendChat={socket.sendChat}
+          onChatMessage={socket.onChatMessage}
+          onMemberJoined={socket.onMemberJoined}
+          onMemberLeft={socket.onMemberLeft}
           onHostLeft={socket.onHostLeft}
+          sendFile={peerNet.sendFile}
+          registerVideoElement={peerNet.registerVideoElement}
+          transferStatus={peerNet.transferStatus}
+          onRemoteVideoReady={peerNet.onRemoteVideoReady}
+          onTransferError={peerNet.onTransferError}
         />
       )}
     </>

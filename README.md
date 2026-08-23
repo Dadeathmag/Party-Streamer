@@ -101,7 +101,7 @@ client/src/
 │   ├── Icons.jsx              inline SVG icon set (currentColor, size prop)
 │   ├── VideoStage.jsx         <video> / empty state + members overlay
 │   ├── PlayerControls.jsx     seek bar, transport buttons, volume, time
-│   ├── ChatPanel.jsx          chat sidebar (local-only for now)
+│   ├── ChatPanel.jsx          chat sidebar (relayed via chat:message)
 │   └── MembersPopup.jsx       member list overlay
 └── pages/
     ├── Home.jsx               host/join forms; delegates networking to App
@@ -122,12 +122,14 @@ Design rules:
 
 | Event                 | Direction        | Payload                              |
 | --------------------- | ---------------- | ------------------------------------ |
-| `room:create`         | client → server  | `{ name, code }` → ack               |
-| `room:join`           | client → server  | `{ code }` → ack                     |
+| `room:create`         | client → server  | `{ name, code, displayName }` → ack  |
+| `room:join`           | client → server  | `{ code, displayName }` → ack        |
 | `room:leave`          | client → server  | —                                    |
 | `room:member-joined`  | server → room    | `{ socketId, displayName, members }` |
-| `room:member-left`    | server → room    | `{ socketId, members }`              |
+| `room:member-left`    | server → room    | `{ socketId, displayName, members }` |
 | `room:host-left`      | server → room    | — (room is destroyed)                |
 | `playback:sync`       | host → server    | `{ action: 'play'\|'pause'\|'seek', time }` |
 | `playback:sync`       | server → guests  | `{ action, time }`                   |
+| `chat:message`        | client → server  | `{ text }`                           |
+| `chat:message`        | server → room    | `{ from, displayName, text, ts }`    |
 | `signal:*`            | client ↔ client  | relayed `{ from, offer/answer/candidate }` |
