@@ -1,4 +1,5 @@
 import { PlayIcon, LinkIcon } from './Icons.jsx'
+import BulletLayer from './BulletLayer.jsx'
 import MembersPopup from './MembersPopup.jsx'
 
 /**
@@ -24,6 +25,9 @@ import MembersPopup from './MembersPopup.jsx'
  *                                              ref for the embed mount point
  * @param {string | null} [props.embedError]    fatal embed load/play message
  * @param {boolean} props.isHost                host sees a click-to-select empty state
+ * @param {Array<object>} [props.bullets]       active danmaku bullets (fullscreen only)
+ * @param {(id: number) => void} [props.onBulletExpire]
+ *                                              bullet scroll finished
  * @param {boolean} props.showMembers           whether the members popup is open
  * @param {Array<object>} props.members         room members (see useSocket)
  * @param {(socketId: string) => void} [props.onKickMember]
@@ -41,6 +45,8 @@ export default function VideoStage({
   embedContainerRef,
   embedError = null,
   isHost,
+  bullets,
+  onBulletExpire,
   showMembers,
   members,
   onKickMember,
@@ -98,6 +104,9 @@ export default function VideoStage({
           {videoName && !incomingLabel && <p className="room__now-playing">{videoName}</p>}
         </div>
       )}
+
+      {/* Danmaku bullets (visible only in fullscreen via CSS) */}
+      {bullets?.length > 0 && <BulletLayer bullets={bullets} onExpire={onBulletExpire} />}
 
       {/* Members Popup */}
       {showMembers && <MembersPopup members={members} onKickMember={onKickMember} />}

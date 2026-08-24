@@ -44,6 +44,7 @@ import { ArrowLeftIcon, UploadIcon, DownloadIcon, LinkIcon, GlobeIcon, LockIcon,
 import VideoStage from '../components/VideoStage.jsx'
 import PlayerControls from '../components/PlayerControls.jsx'
 import ChatPanel from '../components/ChatPanel.jsx'
+import { BULLET_LANES } from '../components/BulletLayer.jsx'
 import {
   BEACON_INTERVAL_MS,
   DRIFT_NUDGE_THRESHOLD_S,
@@ -142,6 +143,7 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
   const [urlDraft, setUrlDraft] = useState('')
   const [urlInputOpen, setUrlInputOpen] = useState(false)
   const [embedError, setEmbedError] = useState(null)
+  const [bullets, setBullets] = useState([])
 
   // ── Refs ──────────────────────────────────────────────────────────────────
   const videoRef = useRef(null)
@@ -163,6 +165,32 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
   const isMutedRef = useRef(isMuted)
   useEffect(() => { volumeRef.current = volume }, [volume])
   useEffect(() => { isMutedRef.current = isMuted }, [isMuted])
+  // Latest-fullscreen mirror so the chat listener can gate bullet spawning
+  // without re-subscribing on every fullscreen toggle.
+  const isFullscreenRef = useRef(false)
+  useEffect(() => { isFullscreenRef.current = isFullscreen }, [isFullscreen])
+  const nextBulletLaneRef = useRef(0)
+
+  // Danmaku bullets: fullscreen-only scrolling chat overlay. Lanes cycle so
+  // concurrent messages don't stack; duration jitters with the message id for
+  // a less mechanical feel. Capped to keep late bursts from piling up.
+  const pushBullet = useCallback((msg) => {
+    setBullets(prev => [
+      ...prev.slice(-14),
+      {
+        id: msg.id,
+        user: msg.user,
+        text: msg.text,
+        isOwn: msg.isOwn,
+        lane: nextBulletLaneRef.current++ % BULLET_LANES,
+        duration: 7 + ((msg.id * 37) % 30) / 10,
+      },
+    ])
+  }, [])
+
+  const expireBullet = useCallback((id) => {
+    setBullets(prev => prev.filter(b => b.id !== id))
+  }, [])
 
   // ── Effects ───────────────────────────────────────────────────────────────
 
@@ -508,16 +536,22 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
 
   // Chat: the server broadcasts every message to the whole room INCLUDING the
   // sender, so this listener is the single place history gets appended from.
+  // While fullscreen, non-system messages also spawn a danmaku bullet.
   useEffect(() => {
     onChatMessage?.(({ from, displayName: senderName, text }) => {
+      const id = nextMsgIdRef.current++
+      const isOwn = from === myId
       setMessages(prev => [...prev, {
-        id: nextMsgIdRef.current++,
+        id,
         user: senderName,
         text,
-        isOwn: from === myId,
+        isOwn,
       }])
+      if (isFullscreenRef.current) {
+        pushBullet({ id, user: senderName, text, isOwn })
+      }
     })
-  }, [myId, onChatMessage])
+  }, [myId, onChatMessage, pushBullet])
 
   // ── Playback handlers (broadcast when host, local-only otherwise) ────────
   // All commands go through the unified playback surface — the native
@@ -874,6 +908,8 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
             embedContainerRef={embedContainerRef}
             embedError={embedError}
             isHost={isHost}
+            bullets={bullets}
+            onBulletExpire={expireBullet}
             showMembers={showMembers}
             members={members}
             onKickMember={isHost ? handleKickMember : undefined}

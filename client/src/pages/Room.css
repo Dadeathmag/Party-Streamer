@@ -886,6 +886,57 @@ button.room__vis-toggle--locked:hover {
   backdrop-filter: none;
 }
 
+/* ── Bullet (Danmaku) Messages ──
+   Chat messages scroll right-to-left across the video while fullscreen.
+   The layer lives inside .room__video-container (VideoStage) and is hidden
+   outside fullscreen; pointer-events stay off so video clicks still work. */
+.room__bullets {
+  display: none;
+}
+
+.room--fullscreen .room__bullets {
+  display: block;
+  position: absolute;
+  top: 16px;
+  left: 0;
+  right: 0;
+  height: 60%;
+  z-index: 15;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.room__bullet {
+  position: absolute;
+  left: 100%;
+  padding: 3px 12px;
+  border-radius: var(--radius-full);
+  background: rgba(13, 13, 18, 0.6);
+  color: #fff;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  animation-name: bullet-scroll;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+  will-change: transform;
+}
+
+.room__bullet-user {
+  margin-right: 8px;
+  opacity: 0.7;
+  font-size: 0.8rem;
+}
+
+.room__bullet--own {
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+
+@keyframes bullet-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(calc(-100vw - 100%)); }
+}
+
 /* ── Responsive ── */
 @media (max-width: 768px) {
   .room__main {
