@@ -657,8 +657,19 @@ button.room__vis-toggle--locked:hover {
   transition: width 0.3s var(--ease-out);
 }
 
+/* Collapsed = panel gone entirely; only the floating toggle handle remains
+   (it hangs outside the zero-width aside, over the video's right edge). */
 .room__chat--collapsed {
-  width: 48px;
+  width: 0;
+  min-width: 0;
+  background: transparent;
+  border-left-color: transparent;
+}
+
+/* With no panel under it the handle must clear the screen edge entirely
+   (.room clips overflow), so pull the whole button inside. */
+.room__chat--collapsed .room__chat-toggle {
+  left: -44px;
 }
 
 .room__chat-toggle {
@@ -822,6 +833,59 @@ button.room__vis-toggle--locked:hover {
   cursor: not-allowed;
 }
 
+/* ── Fullscreen / Cinema Mode ──
+   The document goes fullscreen; page chrome hides and the video takes over
+   the viewport. Controls float over the video, chat becomes a translucent
+   overlay pinned to the right edge. */
+.room--fullscreen .room__topbar,
+.room--fullscreen .room__mode-bar {
+  display: none;
+}
+
+.room--fullscreen .room__main,
+.room--fullscreen .room__video-panel {
+  position: relative;
+}
+
+.room--fullscreen .room__controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.85) 40%);
+  border-top: none;
+  padding-top: 24px;
+}
+
+.room--fullscreen .room__transfer-status {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: rgba(13, 13, 18, 0.85);
+}
+
+.room--fullscreen .room__chat {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  height: auto;
+  max-width: min(340px, 75vw);
+  z-index: 25;
+  background: rgba(13, 13, 18, 0.85);
+  backdrop-filter: blur(8px);
+}
+
+.room--fullscreen .room__chat--collapsed {
+  background: transparent;
+  backdrop-filter: none;
+}
+
 /* ── Responsive ── */
 @media (max-width: 768px) {
   .room__main {
@@ -836,14 +900,20 @@ button.room__vis-toggle--locked:hover {
   }
 
   .room__chat--collapsed {
-    width: 100%;
-    height: 48px;
+    width: 0;
+    height: auto;
   }
 
   .room__chat-toggle {
     top: -16px;
     left: 50%;
     transform: translateX(-50%);
+  }
+
+  .room__chat--collapsed .room__chat-toggle {
+    top: 12px;
+    left: -44px;
+    transform: none;
   }
 
   .room__action-label {

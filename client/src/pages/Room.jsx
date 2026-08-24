@@ -683,13 +683,18 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen()
-      setIsFullscreen(true)
+      document.documentElement.requestFullscreen().catch(() => {})
     } else {
       document.exitFullscreen()
-      setIsFullscreen(false)
     }
   }
+
+  // Native exits (Esc / F11) must stay in sync with our icon state.
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(Boolean(document.fullscreenElement))
+    document.addEventListener('fullscreenchange', onFsChange)
+    return () => document.removeEventListener('fullscreenchange', onFsChange)
+  }, [])
 
   const pct = duration ? (currentTime / duration) * 100 : 0
 
@@ -714,7 +719,7 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="room">
+    <div className={`room ${isFullscreen ? 'room--fullscreen' : ''}`}>
       {/* ── Top Bar ── */}
       <header className="room__topbar">
         <div className="room__topbar-left">
