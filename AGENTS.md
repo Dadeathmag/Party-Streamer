@@ -11,13 +11,14 @@ code. The server is **signaling only** — it must never receive, store, or
 proxy video.
 
 Current status: Phases 1–2 complete (UI + signaling, integration-tested), plus
-early Phase 4 mechanics (`playback:sync` relayed via Socket.IO, host-only) and
-chat relayed via Socket.IO (`chat:message`, membership-checked). Members now
-carry client-supplied display names. **Phase 3 (basic WebRTC) is done** — the
-host holds an `RTCPeerConnection` + DataChannel toward each viewer, and the
+chat relayed via Socket.IO (`chat:message`, membership-checked). Members carry
+client-supplied display names. **Phase 3 (basic WebRTC) is done** — the host
+holds an `RTCPeerConnection` + DataChannel toward each viewer, and the
 selected video is distributed as P2P chunks with progressive MSE playback
-(early Phase 5 mechanics). **Next task is Phase 4 proper** — see bottom of
-this file. No peer forwarding yet.
+(early Phase 5 mechanics). **Phase 4 proper is done**: playback sync rides
+the DataChannels (SYNC_PLAY/PAUSE/SEEK + periodic SYNC_BEACON drift
+correction, seq-deduped against the temporary `playback:sync` Socket.IO
+fallback). No peer forwarding yet — see bottom of this file.
 
 ## Repository Map
 
@@ -43,6 +44,10 @@ server/                          CommonJS, port 3002
         └── chatHandlers.js      chat:message relay (membership-checked, no storage)
         └── streamHandlers.js    stream:set-mode (host-only) — stores the room's
                                  streaming mode (p2p|full|url) + relays changes
+        └── roomAdminHandlers.js host-only administration: room:set-visibility
+                                 (private⇄public), room:set-locked (block joins),
+                                 room:list (discovery),
+                                 room:kick (member removal → room:kicked)
 
 client/                          React 19 + Vite, ESM
 ├── vite.config.js               dev proxy: /socket.io → http://localhost:3002
@@ -53,16 +58,21 @@ client/                          React 19 + Vite, ESM
     ├── hooks/
     │   ├── useSocket.js         ALL Socket.IO logic: connection lifecycle, room
     │                            create/join/leave, members state, playback sync
-    │                            send/receive, chat send/receive, onHostLeft,
+    │                            fallback relay (seq passthrough), chat
+    │                            send/receive, onHostLeft,
     │                            signal:* passthrough (sendSignal / onSignal)
     │   └── usePeerNetwork.js    P2P glue: one Peer per remote member reconciled
     │                            against the members list; host chunked-upload of
     │                            the selected video (late joiners auto-served);
+    │                            host playback-sync broadcast over DataChannels
+    │                            (broadcastPlayback/broadcastBeacon, seq-tagged);
     │                            guest FileReceiver wiring + transfer status
     ├── network/
     │   ├── roomProtocol.js      transport-independent DataChannel message types
-    │   │                        (FILE_OFFER/ACCEPT/COMPLETE/ABORT) + chunk/backpressure
-    │   │                        constants; JSON strings = control, ArrayBuffer = bytes
+    │   │                        (FILE_OFFER/ACCEPT/COMPLETE/ABORT +
+    │   │                        SYNC_PLAY/PAUSE/SEEK/BEACON) + chunk/backpressure/
+    │   │                        drift constants; JSON strings = control,
+    │   │                        ArrayBuffer = bytes
     │   ├── peer.js              per-peer RTCPeerConnection wrapper (STUN, host is
     │                            permanent offerer, reliable ordered DataChannel,
     │                            ICE queueing, drain-wait backpressure helper)
@@ -100,12 +110,16 @@ One source of truth per handler lives at the top of each module in
 
 | Event              | Payload                                        | Ack response |
 | ------------------ | ---------------------------------------------- | ------------ |
-| `room:create`      | `{ name, code, displayName }`                  | `{ ok: true, roomId, code, members, streamMode }` or `{ ok: false, error }` |
-| `room:join`        | `{ code, displayName }`                        | `{ ok: true, roomId, name, code, members, streamMode }` |
+| `room:create`      | `{ name, code, displayName, isPublic? }`       | `{ ok: true, roomId, code, members, streamMode, isPublic, locked }` or `{ ok: false, error }` |
+| `room:join`        | `{ code, displayName }`                        | `{ ok: true, roomId, name, code, members, streamMode, isPublic, locked }` |
 | `room:leave`       | —                                              | `{ ok: true }` |
-| `playback:sync`    | `{ action: 'play'\|'pause'\|'seek', time }`    | none (fire-and-forget) |
+| `playback:sync`    | `{ action: 'play'\|'pause'\|'seek', time, seq? }` | none (fire-and-forget; FALLBACK transport — primary is DataChannel SYNC_*, see roomProtocol.js) |
 | `chat:message`     | `{ text }`                                     | none (fire-and-forget) |
 | `stream:set-mode`  | `{ type: 'p2p'\|'full'\|'url', url? }`         | `{ ok: true, mode }` or `{ ok: false, error }` |
+| `room:set-visibility` | `{ isPublic: boolean }`                     | `{ ok: true, isPublic }` or `{ ok: false, error }` |
+| `room:set-locked`  | `{ locked: boolean }`                          | `{ ok: true, locked }` or `{ ok: false, error }` |
+| `room:list`        | —                                              | `{ ok: true, rooms: [{ code, name, hostName, memberCount }] }` |
+| `room:kick`        | `{ socketId }`                                 | `{ ok: true }` or `{ ok: false, error }` |
 | `signal:offer`     | `{ to, offer }`                                | none |
 | `signal:answer`    | `{ to, answer }`                               | none |
 | `signal:ice-candidate` | `{ to, candidate }`                        | none |
@@ -118,6 +132,9 @@ Server-side enforcement:
   "Host" / "Guest-N". Duplicates inside a room get a numeric suffix
   ("Alex 2"). Names are trimmed and capped at 24 chars server-side.
 - `playback:sync` is silently dropped unless the sender is that room's host.
+  It now carries an optional monotonic `seq` so guests can dedupe against
+  the DataChannel copy of the same command (both transports are dual-sent
+  by the host until DataChannel parity is proven).
 - `chat:message` requires membership; text is trimmed, capped at 300 chars,
   and never stored — the room's history lives only in clients.
 - `stream:set-mode` is host-only; `type` must be `p2p|full|url`, and `url`
@@ -126,6 +143,16 @@ Server-side enforcement:
   streams are loaded by each client directly; no media ever transits P2P or
   the server in that mode. `full` sets delivery:'full' on FILE_OFFER so
   guests assemble the whole Blob before playback.
+- `room:set-visibility` is host-only; public rooms appear in `room:list`
+  (available to any connected client). Private rooms are join-by-code only.
+  Both create and join acks carry the current `isPublic` flag.
+- `room:set-locked` is host-only; a locked room rejects every `room:join`
+  (even with the correct code) BEFORE the caller leaves any prior room, so
+  failed joins are side-effect free. Join acks carry the `locked` flag.
+- `room:kick` is host-only; the target must be a non-host member. The
+  removed socket leaves the Socket.IO room, gets `room:kicked`, and can no
+  longer emit into the room; survivors see `room:member-left` with
+  `kicked: true`.
 - Signal relays are blind: the server never inspects SDP/ICE payloads.
 - Disconnect always runs `leaveCurrentRoom`; if the leaver was the host the
   room is destroyed and every member gets `room:host-left`.
@@ -137,6 +164,9 @@ Server-side enforcement:
 | `room:member-joined`  | `{ socketId, displayName, members }`       | room          |
 | `room:member-left`    | `{ socketId, displayName, members }`       | room          |
 | `room:host-left`      | — (room destroyed)                         | room          |
+| `room:kicked`         | `{ reason? }`                              | removed member only |
+| `room:visibility-changed` | `{ from, displayName, isPublic }`      | whole room incl. sender |
+| `room:lock-changed`   | `{ from, displayName, locked }`            | whole room incl. sender |
 | `playback:sync`       | `{ action, time }`                         | everyone else |
 | `chat:message`        | `{ from, displayName, text, ts }`          | whole room incl. sender |
 | `stream:mode-changed` | `{ from, displayName, type, url }`         | whole room incl. sender |
@@ -222,11 +252,15 @@ Config (env vars): `PORT` (server, default 3002), `CLIENT_ORIGIN`
 3. Close guest tab → host drops to 1 member.
 4. Close host tab → guest receives `room:host-left` and returns home cleanly.
 5. Host selects local video, plays/pauses/seeks → guest's video mirrors the
-   action (currently over the Socket.IO relay).
+   action (primary: DataChannel SYNC_*; the Socket.IO relay still fires as
+   fallback — guests dedupe via `seq`). Pause the host tab for ~10 s, resume,
+   and watch the guest snap/nudge back into step within one beacon interval.
 6. With the video still selected, watch the guest tab: "Receiving …%" overlay
    appears, then the video becomes playable (MSE) or assembles and swaps in
    (Blob fallback for non-MSE formats). A guest joining AFTER selection gets
-   the file automatically once its DataChannel opens.
+   the file automatically once its DataChannel opens. A guest joining while
+   the host is PLAYING starts (or is pulled) to the host position by the next
+   SYNC_BEACON within ~5 s of its DataChannel opening.
 
 Automated equivalent: `npm test --prefix server` covers the whole event
 surface including non-host sync rejection and host-disconnect teardown.
@@ -243,8 +277,9 @@ Do not silently change these without updating project.md's deviation list:
    check to join validation.
 3. **Chat relays over Socket.IO** — works end-to-end today but moves to
    DataChannels in Phase 7 (payload shape already transport-independent).
-4. **Playback sync rides the signaling transport** — migrate onto
-   DataChannels (Phase 4 proper; the channels already exist).
+4. **Playback-sync fallback is permanent-looking** — the Socket.IO relay
+   dual-sends every host command until DataChannel parity is proven in the
+   wild; then `sendPlaybackSync` + the relay listener can be deleted.
 5. **No shareable room URLs** (`/room/:code`) yet.
 6. **Video transfer memory ceiling** — guests retain every chunk until
    completion (enables transparent MSE→Blob fallback), so RAM use peaks at
@@ -252,15 +287,9 @@ Do not silently change these without updating project.md's deviation list:
 7. **Seeking beyond buffered data stalls** on guests mid-transfer (no range
    requests yet); full seek works after FILE_COMPLETE.
 
-## Next Task: Phase 4 proper — Playback sync over DataChannels
+## Next Task
 
-Scope:
-
-1. Extend `network/roomProtocol.js` with PLAY / PAUSE / SEEK message types.
-2. Host broadcasts sync commands over each viewer's DataChannel instead of
-   the `playback:sync` Socket.IO relay; server relay stays temporarily as
-   fallback until parity is proven.
-3. Drift handling: periodic host time beacons, soft-correct viewers.
-
-Do NOT start peer forwarding (Phase 6), chat transport migration (Phase 7),
-or voice (Phase 8) before this works.
+Consult project.md's phase roadmap. Candidate next steps, in rough order of
+leverage: server-generated room codes (gap 1), MAX_PEERS_PER_ROOM join cap
+(gap 2), then Phase 6 peer forwarding. Do NOT start chat transport migration
+(Phase 7) or voice (Phase 8) first.

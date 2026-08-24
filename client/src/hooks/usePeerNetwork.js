@@ -9,8 +9,13 @@
  *   - HOST: chunked-upload the selected file to every connected viewer;
  *     late joiners automatically receive the currently selected video once
  *     their DataChannel opens
+ *   - HOST: broadcast playback commands + periodic state beacons over every
+ *     open viewer DataChannel (Phase 4). The Socket.IO 'playback:sync' relay
+ *     is dual-sent as a temporary fallback; commands carry a monotonic `seq`
+ *     so guests that hear both copies apply exactly one.
  *   - GUEST: feed incoming offers/chunks into a single FileReceiver wired
- *     to the room's <video> element (registered from Room.jsx)
+ *     to the room's <video> element (registered from Room.jsx) and surface
+ *     host sync messages via onPeerPlaybackSync
  *
  * The server relays signaling blindly and never sees media (AGENTS.md rule 1).
  */
@@ -19,12 +24,47 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import Peer, { PEER_STATE } from '../network/peer.js'
 import FileSender from '../network/fileSender.js'
 import FileReceiver from '../network/fileReceiver.js'
-import { DELIVERY } from '../network/roomProtocol.js'
 import {
-  decodeMessage,
+  DELIVERY,
+  MSG,
   encodeMessage,
+  decodeMessage,
   isControlMessage,
 } from '../network/roomProtocol.js'
+
+/** Finite-number guard for wire values. */
+function finite(value, fallback = 0) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+/**
+ * Normalize a SYNC_* DataChannel message into the canonical shape consumed
+ * by Room.jsx's single host-sync applier:
+ *   command → { kind: 'command', action, time, seq }
+ *   beacon  → { kind: 'beacon', action: null, playing, time, seq }
+ * @param {{ type: string, time?: number, playing?: boolean, seq?: number }} msg
+ */
+function normalizeSyncMessage(msg) {
+  const seq = typeof msg.seq === 'number' ? msg.seq : null
+  switch (msg.type) {
+    case MSG.SYNC_PLAY:
+      return { kind: 'command', action: 'play', time: finite(msg.time), seq }
+    case MSG.SYNC_PAUSE:
+      return { kind: 'command', action: 'pause', time: finite(msg.time), seq }
+    case MSG.SYNC_SEEK:
+      return { kind: 'command', action: 'seek', time: finite(msg.time), seq }
+    case MSG.SYNC_BEACON:
+      return {
+        kind: 'beacon',
+        action: null,
+        playing: !!msg.playing,
+        time: finite(msg.time),
+        seq,
+      }
+    default:
+      return null
+  }
+}
 
 /**
  * Remote peers this client should be connected to, given its own role.
@@ -46,7 +86,7 @@ function desiredPeerIds(members, myId) {
  * @param {object} socketApi everything returned by useSocket()
  */
 export default function usePeerNetwork(socketApi) {
-  const { myId, members, sendSignal, onSignal } = socketApi
+  const { myId, members, sendSignal, onSignal, sendPlaybackSync } = socketApi
 
   /** @type {React.MutableRefObject<Map<string, Peer>>} */
   const peersRef = useRef(new Map())
@@ -60,6 +100,8 @@ export default function usePeerNetwork(socketApi) {
   const currentDeliveryRef = useRef(DELIVERY.PROGRESSIVE)
   /** @type {React.MutableRefObject<HTMLVideoElement|null>} */
   const videoElRef = useRef(null)
+  /** Monotonic counter tagging every host sync command/beacon. */
+  const syncSeqRef = useRef(0)
 
   // Latest props for use inside stable callbacks (avoids stale closures);
   // refreshed in an effect, so callbacks read at most one render behind.
@@ -71,6 +113,8 @@ export default function usePeerNetwork(socketApi) {
   const [transferStatus, setTransferStatus] = useState(null)
   const remoteReadyCbRef = useRef(null)
   const transferErrorCbRef = useRef(null)
+  /** Guest-side listener for host sync arriving over DataChannels. */
+  const peerSyncCbRef = useRef(null)
 
   const isHostNow = () => {
     const { members: m, myId: id } = latestRef.current
@@ -188,6 +232,51 @@ export default function usePeerNetwork(socketApi) {
     receiverRef.current?.attachVideo(el)
   }, [])
 
+  // ── Playback sync (host broadcasts; guests receive) ───────────────────────
+
+  /**
+   * Host: push one playback command to every viewer. Primary path is each
+   * open DataChannel; the Socket.IO relay is dual-sent as a temporary
+   * fallback (guests dedupe both copies via `seq`), so a viewer whose
+   * channel is still negotiating stays in sync.
+   * @param {'play'|'pause'|'seek'} action
+   * @param {number} time authoritative host position (s)
+   */
+  const broadcastPlayback = useCallback(
+    (action, time) => {
+      if (!isHostNow()) return
+      const seq = ++syncSeqRef.current
+      const type =
+        action === 'play'
+          ? MSG.SYNC_PLAY
+          : action === 'pause'
+            ? MSG.SYNC_PAUSE
+            : MSG.SYNC_SEEK
+      const frame = encodeMessage(type, { time, seq })
+      for (const peer of peersRef.current.values()) {
+        if (peer.isOpen) peer.sendText(frame)
+      }
+      sendPlaybackSync?.(action, time, seq)
+    },
+    [sendPlaybackSync],
+  )
+
+  /**
+   * Host: publish the desired state ({ time, playing: true }) so viewers can
+   * soft-correct drift and late joiners converge. DataChannel-only — beacons
+   * are periodic corrections, not state transitions, so they never touch the
+   * signaling relay.
+   * @param {number} time current host position (s)
+   */
+  const broadcastBeacon = useCallback((time) => {
+    if (!isHostNow() || !Number.isFinite(time)) return
+    const seq = ++syncSeqRef.current
+    const frame = encodeMessage(MSG.SYNC_BEACON, { time, playing: true, seq })
+    for (const peer of peersRef.current.values()) {
+      if (peer.isOpen) peer.sendText(frame)
+    }
+  }, [])
+
   // ── Message routing ───────────────────────────────────────────────────────
 
   const handlePeerMessage = useCallback(
@@ -197,6 +286,22 @@ export default function usePeerNetwork(socketApi) {
         try {
           msg = decodeMessage(data)
         } catch {
+          return
+        }
+        // Host sync over the DataChannel (Phase 4 primary transport): only
+        // guests consume it — the host IS the authority.
+        if (
+          msg.type === MSG.SYNC_PLAY ||
+          msg.type === MSG.SYNC_PAUSE ||
+          msg.type === MSG.SYNC_SEEK ||
+          msg.type === MSG.SYNC_BEACON
+        ) {
+          if (!isHostNow()) {
+            const normalized = normalizeSyncMessage(msg)
+            if (normalized && typeof normalized.seq === 'number') {
+              peerSyncCbRef.current?.(normalized)
+            }
+          }
           return
         }
         sendersRef.current.get(peerId)?.handleControlMessage(msg)
@@ -297,12 +402,23 @@ export default function usePeerNetwork(socketApi) {
     transferErrorCbRef.current = cb
   }, [])
 
+  /**
+   * Guest: host playback sync arriving over DataChannels, pre-normalized to
+   * { kind: 'command'|'beacon', action?, playing?, time, seq }.
+   */
+  const onPeerPlaybackSync = useCallback((cb) => {
+    peerSyncCbRef.current = cb
+  }, [])
+
   return {
     sendFile,
     cancelTransfers,
     registerVideoElement,
+    broadcastPlayback,
+    broadcastBeacon,
     transferStatus,
     onRemoteVideoReady,
     onTransferError,
+    onPeerPlaybackSync,
   }
 }

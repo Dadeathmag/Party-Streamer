@@ -13,6 +13,18 @@
  *   host → guest  (ArrayBuffer chunks, sequential)
  *   host → guest  FILE_COMPLETE {}
  *   either side   FILE_ABORT    { reason }
+ *   host → guest  SYNC_PLAY     { time, seq }
+ *   host → guest  SYNC_PAUSE    { time, seq }
+ *   host → guest  SYNC_SEEK     { time, seq }
+ *   host → guest  SYNC_BEACON   { time, playing, seq }
+ *
+ * Playback sync (Phase 4): the host is authoritative and pushes commands +
+ * periodic state beacons over each viewer's DataChannel. `seq` is a
+ * monotonic per-host counter that lets guests drop duplicates when a command
+ * arrives over BOTH transports (the Socket.IO 'playback:sync' relay remains
+ * as a fallback until DataChannel parity is proven). Beacons carry the full
+ * desired state (`playing` + `time`) so late joiners converge without
+ * waiting for the next interaction; see usePeerNetwork for drift handling.
  *
  * `delivery` on FILE_OFFER tells the guest how to play what arrives:
  *   - 'progressive' — try MSE first so playback can start mid-transfer
@@ -31,6 +43,10 @@ export const MSG = {
   FILE_ACCEPT: 'FILE_ACCEPT',
   FILE_COMPLETE: 'FILE_COMPLETE',
   FILE_ABORT: 'FILE_ABORT',
+  SYNC_PLAY: 'SYNC_PLAY',
+  SYNC_PAUSE: 'SYNC_PAUSE',
+  SYNC_SEEK: 'SYNC_SEEK',
+  SYNC_BEACON: 'SYNC_BEACON',
 }
 
 /** @enum {string} How an offered file should be delivered/played. */
@@ -75,3 +91,15 @@ export const HIGH_WATER_MARK = 4 * 1024 * 1024
 
 /** Resume sending once the queue drains below this. */
 export const LOW_WATER_MARK = 1 * 1024 * 1024
+
+/** Host beacon cadence while playing (drift correction + late-joiner catch-up). */
+export const BEACON_INTERVAL_MS = 5000
+
+/** Beyond this much drift (s) a beacon snaps the viewer to the host time. */
+export const DRIFT_SEEK_THRESHOLD_S = 1.5
+
+/** Within the seek threshold but beyond this (s): nudge playbackRate. */
+export const DRIFT_NUDGE_THRESHOLD_S = 0.3
+
+/** Clamp for the playbackRate nudge, so corrections stay imperceptible. */
+export const RATE_NUDGE_LIMIT = 0.08

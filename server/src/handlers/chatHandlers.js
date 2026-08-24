@@ -10,8 +10,8 @@
  * when the echo arrives, marking it "own" via the `from` socket id.
  *
  * Messages are never stored server-side; when a room dies its chat dies too.
- * Transport note: this rides Socket.IO for now, like playback:sync, until
- * DataChannels exist — the payload shape is deliberately transport-agnostic.
+ * Transport note: this rides Socket.IO for now (Phase 7 will move it to the
+ * DataChannels) — the payload shape is deliberately transport-agnostic.
  *
  * Wire format:
  *   client emits 'chat:message' { text }

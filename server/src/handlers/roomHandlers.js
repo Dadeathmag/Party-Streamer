@@ -6,8 +6,8 @@ const { leaveCurrentRoom } = require('./membership');
  * @file Room lifecycle handlers: creating, joining, and leaving rooms.
  *
  * Wire format (client ↔ server):
- *   client emits 'room:create' { name, code, displayName }  → ack { ok, roomId, code, members, streamMode }
- *   client emits 'room:join'   { code, displayName }        → ack { ok, roomId, name, code, members, streamMode }
+ *   client emits 'room:create' { name, code, displayName, isPublic? } → ack { ok, roomId, code, members, streamMode, isPublic, locked }
+ *   client emits 'room:join'   { code, displayName }                  → ack { ok, roomId, name, code, members, streamMode, isPublic, locked }
  *   client emits 'room:leave'                               → ack { ok }
  * server emits 'room:member-joined' { socketId, displayName, members }
  * server emits 'room:member-left'   { socketId, displayName, members }
@@ -15,7 +15,8 @@ const { leaveCurrentRoom } = require('./membership');
  *
  * `streamMode` ({ type: 'p2p'|'full'|'url', url } | null) is the room's
  * current streaming mode — see streamHandlers.js. Late joiners use it to
- * sync up with whatever the host is already doing.
+ * sync up with whatever the host is already doing. `isPublic` marks rooms
+ * listed for discovery (see roomAdminHandlers.js).
  *
  * `displayName` is optional; when omitted (or blank after trimming) the
  * server falls back to "Host" / "Guest-N". Duplicate names within a room get
@@ -41,7 +42,7 @@ function cleanDisplayName(raw) {
  */
 function registerRoomHandlers(io, socket, store) {
   // ── Create Room ───────────────────────────────────────────────────────────
-  socket.on('room:create', ({ name, code, displayName }, ack) => {
+  socket.on('room:create', ({ name, code, displayName, isPublic }, ack) => {
     if (!name || !code) {
       return ack?.({ ok: false, error: 'Name and code are required.' });
     }
@@ -60,6 +61,7 @@ function registerRoomHandlers(io, socket, store) {
       code: upperCode,
       hostId: socket.id,
       displayName: cleanDisplayName(displayName),
+      isPublic,
     });
     socket.join(upperCode);
 
@@ -71,6 +73,8 @@ function registerRoomHandlers(io, socket, store) {
       code: upperCode,
       members: result.members,
       streamMode: null,
+      isPublic: result.room.isPublic,
+      locked: result.room.locked,
     });
   });
 
@@ -84,6 +88,12 @@ function registerRoomHandlers(io, socket, store) {
 
     if (!store.get(upperCode)) {
       return ack?.({ ok: false, error: 'Room not found. Check the code and try again.' });
+    }
+
+    // Reject locked rooms BEFORE leaving any current room, so a failed join
+    // does not cost the caller their existing seat.
+    if (store.get(upperCode).locked) {
+      return ack?.({ ok: false, error: 'This room is locked by the host.' });
     }
 
     // If this socket was in another room, drop out of it first.
@@ -114,6 +124,8 @@ function registerRoomHandlers(io, socket, store) {
       code: upperCode,
       members: result.members,
       streamMode: result.room.streamMode ?? null,
+      isPublic: result.room.isPublic,
+      locked: result.room.locked,
     });
   });
 

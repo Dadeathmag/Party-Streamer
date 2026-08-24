@@ -20,6 +20,8 @@ import MembersPopup from './MembersPopup.jsx'
  * @param {boolean} props.isHost                host sees a click-to-select empty state
  * @param {boolean} props.showMembers           whether the members popup is open
  * @param {Array<object>} props.members         room members (see useSocket)
+ * @param {(socketId: string) => void} [props.onKickMember]
+ *                                              host-only member removal
  * @param {() => void} props.onSelectVideo      opens the hidden file picker
  * @param {() => void} props.onTogglePlay       host/guest click-to-toggle playback
  */
@@ -32,6 +34,7 @@ export default function VideoStage({
   isHost,
   showMembers,
   members,
+  onKickMember,
   onSelectVideo,
   onTogglePlay,
 }) {
@@ -61,7 +64,7 @@ export default function VideoStage({
       )}
 
       {/* Members Popup */}
-      {showMembers && <MembersPopup members={members} />}
+      {showMembers && <MembersPopup members={members} onKickMember={onKickMember} />}
     </div>
   )
 }

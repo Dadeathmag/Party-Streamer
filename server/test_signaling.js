@@ -354,7 +354,248 @@ async function runTests() {
   await new Promise((r) => setTimeout(r, 200));
   console.log('✓ P2P streaming mode relayed with url:null');
 
-  // 17. Test Member-Left carries the leaver's display name
+  // ── Room visibility + member removal (host administration) ───────────────
+
+  // 17. Non-host may not change room visibility
+  let strayVisibility = false;
+  const onStrayVisibility = () => {
+    strayVisibility = true;
+  };
+  hostSocket.on('room:visibility-changed', onStrayVisibility);
+  const denyVisRes = await new Promise((resolve) => {
+    guestSocket.emit('room:set-visibility', { isPublic: true }, resolve);
+  });
+  if (denyVisRes.ok) {
+    throw new Error('Non-host was able to change room visibility');
+  }
+  await new Promise((r) => setTimeout(r, 200));
+  hostSocket.off('room:visibility-changed', onStrayVisibility);
+  if (strayVisibility) {
+    throw new Error('Non-host room:set-visibility reached the room');
+  }
+  console.log('✓ Non-host visibility change properly rejected by server');
+
+  // 18. Host makes the room public → relayed to all + discoverable via room:list
+  const visPromises = [hostSocket, guestSocket, outsiderSocket].map(
+    (s) => new Promise((resolve) => s.once('room:visibility-changed', resolve))
+  );
+  const visRes = await new Promise((resolve) => {
+    hostSocket.emit('room:set-visibility', { isPublic: true }, resolve);
+  });
+  if (!visRes.ok || visRes.isPublic !== true) {
+    throw new Error('Host room:set-visibility did not ack ok: ' + JSON.stringify(visRes));
+  }
+  const badVisRes = await new Promise((resolve) => {
+    hostSocket.emit('room:set-visibility', { isPublic: 'yes' }, resolve);
+  });
+  if (badVisRes.ok) {
+    throw new Error('Non-boolean isPublic accepted by server');
+  }
+  const visPayloads = await Promise.all(visPromises);
+  for (const p of visPayloads) {
+    if (
+      p.from !== hostSocket.id ||
+      p.displayName !== 'Test Host' ||
+      p.isPublic !== true
+    ) {
+      throw new Error('room:visibility-changed data mismatch: ' + JSON.stringify(p));
+    }
+  }
+  const listRes = await new Promise((resolve) => {
+    hostSocket.emit('room:list', null, resolve);
+  });
+  if (!listRes.ok || !Array.isArray(listRes.rooms)) {
+    throw new Error('room:list did not ack with a rooms array');
+  }
+  const listedRoom = listRes.rooms.find((r) => r.code === roomCode);
+  if (
+    !listedRoom ||
+    listedRoom.name !== 'Integration Test Room' ||
+    listedRoom.hostName !== 'Test Host' ||
+    listedRoom.memberCount !== 3
+  ) {
+    throw new Error('Public room missing/wrong in room:list: ' + JSON.stringify(listRes.rooms));
+  }
+  console.log('✓ Public visibility relayed and room listed for discovery');
+
+  // 19. Late joiner learns visibility via the join ack
+  const lateSocket2 = await connectSocket('Late Joiner 2');
+  const lateJoin2Res = await new Promise((resolve) => {
+    lateSocket2.emit('room:join', { code: roomCode, displayName: 'Late Guest 2' }, resolve);
+  });
+  if (!lateJoin2Res.ok || lateJoin2Res.isPublic !== true) {
+    throw new Error('Join ack missing isPublic: ' + JSON.stringify(lateJoin2Res));
+  }
+  console.log('✓ Late joiner received isPublic:true in join ack');
+  lateSocket2.disconnect();
+
+  // 20. Member removal (kick): permissions + full flow
+  const victimSocket = await connectSocket('Victim');
+  const victimJoinRes = await new Promise((resolve) => {
+    victimSocket.emit('room:join', { code: roomCode, displayName: 'Victim Guest' }, resolve);
+  });
+  if (!victimJoinRes.ok) throw new Error('Victim failed to join');
+
+  const guestKickRes = await new Promise((resolve) => {
+    guestSocket.emit('room:kick', { socketId: victimSocket.id }, resolve);
+  });
+  if (guestKickRes.ok) {
+    throw new Error('Non-host was able to kick a member');
+  }
+
+  const selfKickRes = await new Promise((resolve) => {
+    hostSocket.emit('room:kick', { socketId: hostSocket.id }, resolve);
+  });
+  if (selfKickRes.ok) {
+    throw new Error('Host was able to kick themselves');
+  }
+
+  const ghostKickRes = await new Promise((resolve) => {
+    hostSocket.emit('room:kick', { socketId: 'no-such-socket' }, resolve);
+  });
+  if (ghostKickRes.ok) {
+    throw new Error('Host was able to kick a non-member');
+  }
+
+  const victimKickedPromise = new Promise((resolve) => {
+    victimSocket.once('room:kicked', resolve);
+  });
+  const kickLeftPromise = new Promise((resolve) => {
+    guestSocket.once('room:member-left', resolve);
+  });
+  const kickAck = await new Promise((resolve) => {
+    hostSocket.emit('room:kick', { socketId: victimSocket.id }, resolve);
+  });
+  if (!kickAck.ok) {
+    throw new Error('Host kick failed: ' + JSON.stringify(kickAck));
+  }
+  const kickedData = await victimKickedPromise;
+  if (!kickedData.reason) {
+    throw new Error('room:kicked missing reason: ' + JSON.stringify(kickedData));
+  }
+  const kickLeftData = await kickLeftPromise;
+  if (
+    kickLeftData.socketId !== victimSocket.id ||
+    kickLeftData.displayName !== 'Victim Guest' ||
+    kickLeftData.kicked !== true ||
+    kickLeftData.members.length !== 3
+  ) {
+    throw new Error('Kicked member-left data mismatch: ' + JSON.stringify(kickLeftData));
+  }
+
+  // The removed socket must no longer be able to reach the room…
+  let strayPostKick = false;
+  const onStrayPostKick = () => {
+    strayPostKick = true;
+  };
+  guestSocket.on('playback:sync', onStrayPostKick);
+  victimSocket.emit('playback:sync', { action: 'seek', time: 1 });
+  await new Promise((r) => setTimeout(r, 200));
+  guestSocket.off('playback:sync', onStrayPostKick);
+  if (strayPostKick) {
+    throw new Error('Kicked member could still broadcast into the room');
+  }
+  victimSocket.disconnect();
+  console.log('✓ Host removed a member (kicked flag, room:kicked, access revoked)');
+
+  // ── Room locking ──────────────────────────────────────────────────────────
+
+  // 21. Non-host may not lock; host locks → relayed + joins rejected
+  const denyLockRes = await new Promise((resolve) => {
+    guestSocket.emit('room:set-locked', { locked: true }, resolve);
+  });
+  if (denyLockRes.ok) {
+    throw new Error('Non-host was able to lock the room');
+  }
+
+  const badLockRes = await new Promise((resolve) => {
+    hostSocket.emit('room:set-locked', { locked: 'yes' }, resolve);
+  });
+  if (badLockRes.ok) {
+    throw new Error('Non-boolean locked accepted by server');
+  }
+
+  const lockPromises = [hostSocket, guestSocket, outsiderSocket].map(
+    (s) => new Promise((resolve) => s.once('room:lock-changed', resolve))
+  );
+  const lockRes = await new Promise((resolve) => {
+    hostSocket.emit('room:set-locked', { locked: true }, resolve);
+  });
+  if (!lockRes.ok || lockRes.locked !== true) {
+    throw new Error('Host room:set-locked did not ack ok: ' + JSON.stringify(lockRes));
+  }
+  const lockPayloads = await Promise.all(lockPromises);
+  for (const p of lockPayloads) {
+    if (
+      p.from !== hostSocket.id ||
+      p.displayName !== 'Test Host' ||
+      p.locked !== true
+    ) {
+      throw new Error('room:lock-changed data mismatch: ' + JSON.stringify(p));
+    }
+  }
+
+  // A join with the CORRECT code is now rejected…
+  const lockedJoiner = await connectSocket('Locked Joiner');
+  const lockedJoinRes = await new Promise((resolve) => {
+    lockedJoiner.emit('room:join', { code: roomCode, displayName: 'Should Fail' }, resolve);
+  });
+  if (
+    lockedJoinRes.ok ||
+    !/locked/i.test(lockedJoinRes.error || '')
+  ) {
+    throw new Error('Locked room accepted a join: ' + JSON.stringify(lockedJoinRes));
+  }
+  // …and the failed join did not cost the caller any existing membership.
+  const outsiderStillIn = await new Promise((resolve) => {
+    hostSocket.emit('room:list', null, (res) =>
+      resolve(res.rooms?.some((r) => r.code === roomCode))
+    );
+  });
+  if (!outsiderStillIn) {
+    throw new Error('Room vanished after a rejected join');
+  }
+  console.log('✓ Locked room rejects joins with the correct code');
+
+  // Late joiner that IS inside learns locked:true via the join ack.
+  const lateJoin3Promise = new Promise((resolve) => {
+    guestSocket.once('room:member-joined', resolve); // will fire for next join
+  });
+
+  // Host unlocks again → joins work once more.
+  const unlockPromises = [hostSocket, guestSocket].map(
+    (s) => new Promise((resolve) => s.once('room:lock-changed', resolve))
+  );
+  const unlockRes = await new Promise((resolve) => {
+    hostSocket.emit('room:set-locked', { locked: false }, resolve);
+  });
+  if (!unlockRes.ok || unlockRes.locked !== false) {
+    throw new Error('Host unlock did not ack ok: ' + JSON.stringify(unlockRes));
+  }
+  await Promise.all(unlockPromises);
+
+  const rejoiner = await connectSocket('Rejoiner');
+  const rejoinRes = await new Promise((resolve) => {
+    rejoiner.emit('room:join', { code: roomCode, displayName: 'Rejoin Guest' }, resolve);
+  });
+  if (!rejoinRes.ok || rejoinRes.locked !== false || rejoinRes.isPublic !== true) {
+    throw new Error('Post-unlock join failed or missing flags: ' + JSON.stringify(rejoinRes));
+  }
+  await lateJoin3Promise; // survivors saw the member-joined broadcast
+  // Drain the departing member's broadcast so later tests see a quiet wire.
+  const rejoinerId = rejoiner.id; // capture before disconnect() clears it
+  const rejoinLeftPromise = new Promise((resolve) => {
+    hostSocket.once('room:member-left', resolve);
+  });
+  rejoiner.disconnect();
+  lockedJoiner.disconnect();
+  const rejoinLeftData = await rejoinLeftPromise;
+  if (rejoinLeftData.socketId !== rejoinerId) {
+    throw new Error('Unexpected member-left during cleanup: ' + JSON.stringify(rejoinLeftData));
+  }
+  console.log('✓ Unlocking re-opens the room and join acks carry isPublic/locked flags');
+
+  // 22. Test Member-Left carries the leaver's display name
   const outsiderId = outsiderSocket.id; // capture before disconnect() clears it
   const memberLeftPromise = new Promise((resolve) => {
     hostSocket.once('room:member-left', resolve);
@@ -369,7 +610,7 @@ async function runTests() {
   }
   console.log('✓ Host received room:member-left with displayName:', leftData.displayName);
 
-  // 18. Test Disconnect / Host-Left
+  // 23. Test Disconnect / Host-Left
   const guestHostLeftPromise = new Promise((resolve) => {
     guestSocket.on('room:host-left', () => {
       console.log('✓ Guest received room:host-left upon host disconnect');

@@ -8,10 +8,17 @@
  *   <PlayerControls>   seek bar, transport buttons, volume, time readout
  *   <ChatPanel>        live-chat sidebar
  *
- * Sync model: the host is the single source of truth. Host interactions call
- * sendPlaybackSync() which the server relays to every other member; guests
- * receive 'playback:sync' via onPlaybackSync and apply it to their local
- * <video> element. Guests' own controls work locally but are never broadcast.
+ * Sync model (Phase 4): the host is the single source of truth. Host
+ * interactions call broadcastPlayback(), which fans SYNC_PLAY/PAUSE/SEEK
+ * out over every viewer's DataChannel and dual-sends the legacy
+ * 'playback:sync' Socket.IO relay as a temporary fallback — a monotonic
+ * `seq` makes the duplicate idempotent for guests. While playing, the host
+ * also publishes SYNC_BEACON state snapshots every BEACON_INTERVAL_MS so
+ * viewers soft-correct drift (playbackRate nudge, snap-seek past the
+ * threshold) and late joiners converge without waiting for an interaction.
+ * Guests receive via onPeerPlaybackSync (DataChannel) and onPlaybackSync
+ * (relay), both funneled into one applier below. Guests' own controls work
+ * locally but are never broadcast.
  *
  * Media distribution: the host picks a streaming mode in the mode bar —
  *   'p2p'   local file streamed P2P in chunks, played progressively via MSE
@@ -25,11 +32,17 @@
  * networking flows through props provided by usePeerNetwork (App.jsx).
  */
 
-import { useState, useRef, useEffect } from 'react'
-import { ArrowLeftIcon, UploadIcon, DownloadIcon, LinkIcon, UsersIcon, LockIcon, MaximizeIcon, MinimizeIcon } from '../components/Icons.jsx'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { ArrowLeftIcon, UploadIcon, DownloadIcon, LinkIcon, GlobeIcon, LockIcon, UnlockIcon, UsersIcon, MaximizeIcon, MinimizeIcon } from '../components/Icons.jsx'
 import VideoStage from '../components/VideoStage.jsx'
 import PlayerControls from '../components/PlayerControls.jsx'
 import ChatPanel from '../components/ChatPanel.jsx'
+import {
+  BEACON_INTERVAL_MS,
+  DRIFT_NUDGE_THRESHOLD_S,
+  DRIFT_SEEK_THRESHOLD_S,
+  RATE_NUDGE_LIMIT,
+} from '../network/roomProtocol.js'
 import './Room.css'
 
 const SAMPLE_MESSAGES = [
@@ -49,8 +62,9 @@ const STREAM_MODE_HINTS = {
  * @param {() => void} props.onLeave
  * @param {Array<{ socketId: string, displayName: string, role: string }>} props.members
  * @param {string | null} props.myId   this client's socket id (marks own chat msgs)
- * @param {(action: string, time: number) => void} props.sendPlaybackSync  host only
- * @param {(cb: (data: { action: string, time: number }) => void) => void} props.onPlaybackSync
+ * @param {(cb: (data: { action: string, time: number, seq?: number }) => void) => void}
+ *        props.onPlaybackSync         guest: host sync via the Socket.IO relay
+ *                                     (temporary fallback transport)
  * @param {(text: string) => void} props.sendChat
  * @param {(cb: (data: { from: string, displayName: string, text: string, ts: number }) => void) => void} props.onChatMessage
  * @param {(cb: (displayName: string) => void) => void} props.onMemberJoined
@@ -60,11 +74,20 @@ const STREAM_MODE_HINTS = {
  *        host: stream file to viewers ('progressive' | 'full')
  * @param {() => void} props.cancelTransfers   abort in-flight transfers + forget current file
  * @param {(el: HTMLVideoElement|null) => void} props.registerVideoElement
+ * @param {(action: 'play'|'pause'|'seek', time: number) => void}
+ *        props.broadcastPlayback      host: push a sync command over every
+ *                                     viewer DataChannel (+ socket fallback)
+ * @param {(time: number) => void} props.broadcastBeacon
+ *        host: publish a { time, playing } state snapshot (drift correction,
+ *        late-joiner convergence)
  * @param {{ direction: 'send'|'receive', name: string, pct: number } | null}
  *        props.transferStatus
  * @param {(cb: (info: { url: string | null, name: string }) => void) => void}
  *        props.onRemoteVideoReady   guest: streamed video is playable
  * @param {(cb: (err: Error) => void) => void} props.onTransferError
+ * @param {(cb: (msg: { kind: 'command'|'beacon', action?: string,
+ *          playing?: boolean, time: number, seq: number|null }) => void) => void}
+ *        props.onPeerPlaybackSync   guest: host sync over DataChannels
  * @param {{ type: 'p2p'|'full'|'url', url: string | null } | null}
  *        props.streamMode           room's current streaming mode (host-set;
  *                                    also the source of truth in link mode)
@@ -72,8 +95,22 @@ const STREAM_MODE_HINTS = {
  *        props.sendStreamMode       host: change the streaming mode
  * @param {(cb: (mode: { type: string, url: string | null }) => void) => void}
  *        props.onStreamModeChanged  live streaming-mode transitions
+ * @param {boolean} props.isPublic          whether the room is publicly listed
+ * @param {boolean} props.locked            true when joins are blocked by the host
+ * @param {(isPublic: boolean) => Promise<{ ok: boolean, error?: string }>}
+ *        props.setVisibility               host: toggle private/public
+ * @param {(locked: boolean) => Promise<{ ok: boolean, locked?: boolean, error?: string }>}
+ *        props.setLocked                   host: lock/unlock the room door
+ * @param {(socketId: string) => Promise<{ ok: boolean, error?: string }>}
+ *        props.kickMember                  host: remove a member
+ * @param {(cb: () => void) => void} props.onKicked
+ *        this client was removed from the room by the host
+ * @param {(cb: (info: { isPublic: boolean }) => void) => void}
+ *        props.onVisibilityChanged         live visibility transitions
+ * @param {(cb: (info: { locked: boolean }) => void) => void}
+ *        props.onLockChanged               live lock transitions
  */
-function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlaybackSync, sendChat, onChatMessage, onMemberJoined, onMemberLeft, onHostLeft, sendFile, cancelTransfers, registerVideoElement, transferStatus, onRemoteVideoReady, onTransferError, streamMode, sendStreamMode, onStreamModeChanged }) {
+function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat, onChatMessage, onMemberJoined, onMemberLeft, onHostLeft, sendFile, cancelTransfers, registerVideoElement, broadcastPlayback, broadcastBeacon, transferStatus, onRemoteVideoReady, onTransferError, onPeerPlaybackSync, streamMode, sendStreamMode, onStreamModeChanged, isPublic, locked, setVisibility, setLocked, kickMember, onKicked, onVisibilityChanged, onLockChanged }) {
   const { name, code, role } = roomInfo
   const isHost = role === 'host'
   // The room's active streaming mode ('p2p' until the host changes it).
@@ -157,29 +194,113 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
     })
   }, [isHost, onHostLeft, onLeave])
 
-  // Guests: apply host playback commands (play/pause/seek) to the local video.
+  // Everyone: bounce back to home when removed by the host.
+  useEffect(() => {
+    onKicked?.(() => {
+      alert('You were removed from the room by the host.')
+      onLeave()
+    })
+  }, [onKicked, onLeave])
+
+  // ── Host sync application (guests, both transports) ──────────────────────
+
+  // One applier fed by the DataChannel path (primary) and the Socket.IO
+  // relay (temporary fallback). Commands carry the host's monotonic `seq`,
+  // so whichever copy arrives first is applied and the duplicate dropped.
+  const lastAppliedSeqRef = useRef(-1)
+
+  const applyHostSync = useCallback((msg) => {
+    const video = videoRef.current
+    if (!video || !msg) return
+
+    if (typeof msg.seq === 'number') {
+      if (msg.seq <= lastAppliedSeqRef.current) return
+      lastAppliedSeqRef.current = msg.seq
+    }
+
+    if (msg.kind === 'beacon') {
+      // Reconcile desired state first — a late joiner may still be paused.
+      if (msg.playing && video.paused) {
+        video.play().catch(() => {})
+        setIsPlaying(true)
+      } else if (!msg.playing && !video.paused) {
+        video.pause()
+        video.playbackRate = 1
+        setIsPlaying(false)
+        return
+      }
+      if (!msg.playing) return
+
+      // Drift correction while playing: snap hard past the seek threshold,
+      // otherwise nudge playbackRate toward the host clock and relax to 1x
+      // once close enough.
+      const drift = msg.time - video.currentTime
+      const absDrift = Math.abs(drift)
+      if (absDrift > DRIFT_SEEK_THRESHOLD_S) {
+        video.currentTime = msg.time
+        video.playbackRate = 1
+      } else if (absDrift > DRIFT_NUDGE_THRESHOLD_S) {
+        video.playbackRate = Math.min(
+          1 + RATE_NUDGE_LIMIT,
+          Math.max(1 - RATE_NUDGE_LIMIT, 1 + drift * 0.1),
+        )
+      } else {
+        video.playbackRate = 1
+      }
+      return
+    }
+
+    switch (msg.action) {
+      case 'play':
+        video.currentTime = msg.time
+        video.play().catch(() => {})
+        video.playbackRate = 1
+        setIsPlaying(true)
+        break
+      case 'pause':
+        video.pause()
+        video.currentTime = msg.time
+        video.playbackRate = 1
+        setIsPlaying(false)
+        break
+      case 'seek':
+        video.currentTime = msg.time
+        break
+    }
+  }, [])
+
+  // DataChannel path: pre-normalized by usePeerNetwork.
   useEffect(() => {
     if (isHost) return
-    onPlaybackSync?.(({ action, time }) => {
-      const video = videoRef.current
-      if (!video) return
-      switch (action) {
-        case 'play':
-          video.currentTime = time
-          video.play().catch(() => {})
-          setIsPlaying(true)
-          break
-        case 'pause':
-          video.pause()
-          video.currentTime = time
-          setIsPlaying(false)
-          break
-        case 'seek':
-          video.currentTime = time
-          break
-      }
+    onPeerPlaybackSync?.(applyHostSync)
+  }, [isHost, onPeerPlaybackSync, applyHostSync])
+
+  // Socket.IO relay path: normalize into the same shape before applying.
+  useEffect(() => {
+    if (isHost) return
+    onPlaybackSync?.((data) => {
+      applyHostSync({
+        kind: 'command',
+        action: data?.action,
+        time: typeof data?.time === 'number' && Number.isFinite(data.time) ? data.time : 0,
+        seq: typeof data?.seq === 'number' ? data.seq : null,
+      })
     })
-  }, [isHost, onPlaybackSync])
+  }, [isHost, onPlaybackSync, applyHostSync])
+
+  // Host: periodic state beacons over the viewer DataChannels so drifting
+  // viewers soft-correct and late joiners pick up current playback within
+  // one interval instead of waiting for the next interaction.
+  useEffect(() => {
+    if (!isHost || !isPlaying || !mediaReady || !broadcastBeacon) return
+    const fire = () => {
+      const v = videoRef.current
+      if (v && Number.isFinite(v.currentTime)) broadcastBeacon(v.currentTime)
+    }
+    fire()
+    const timer = setInterval(fire, BEACON_INTERVAL_MS)
+    return () => clearInterval(timer)
+  }, [isHost, isPlaying, mediaReady, broadcastBeacon])
 
   // Guests: a streamed video from the host became playable (or finished
   // assembling). url === null means MSE is already wired to our <video>.
@@ -243,10 +364,10 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
     if (!videoRef.current) return
     if (isPlaying) {
       videoRef.current.pause()
-      if (isHost) sendPlaybackSync?.('pause', videoRef.current.currentTime)
+      if (isHost) broadcastPlayback?.('pause', videoRef.current.currentTime)
     } else {
       videoRef.current.play()
-      if (isHost) sendPlaybackSync?.('play', videoRef.current.currentTime)
+      if (isHost) broadcastPlayback?.('play', videoRef.current.currentTime)
     }
     setIsPlaying(!isPlaying)
   }
@@ -257,13 +378,13 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
     const pct = (e.clientX - rect.left) / rect.width
     const newTime = pct * duration
     videoRef.current.currentTime = newTime
-    if (isHost) sendPlaybackSync?.('seek', newTime)
+    if (isHost) broadcastPlayback?.('seek', newTime)
   }
 
   const skip = (seconds) => {
     if (!videoRef.current) return
     videoRef.current.currentTime += seconds
-    if (isHost) sendPlaybackSync?.('seek', videoRef.current.currentTime)
+    if (isHost) broadcastPlayback?.('seek', videoRef.current.currentTime)
   }
 
   // ── Volume handlers (always local — never synced) ─────────────────────────
@@ -342,11 +463,45 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
     await applyStreamType('url', trimmed)
   }
 
+  // ── Member removal (host only; guests never see the buttons) ─────────────
+
+  const handleKickMember = async (socketId) => {
+    const res = await kickMember?.(socketId)
+    if (!res?.ok) {
+      addSystemMessage(`Could not remove member: ${res?.error || 'unknown error'}`)
+    }
+  }
+
   // Chat: system lines when other members join or leave the party.
   useEffect(() => {
     onMemberJoined?.((joinedName) => addSystemMessage(`${joinedName} joined the party`))
-    onMemberLeft?.((leftName) => addSystemMessage(`${leftName} left the party`))
+    onMemberLeft?.(({ displayName, kicked }) =>
+      addSystemMessage(kicked ? `${displayName} was removed by the host` : `${displayName} left the party`)
+    )
   }, [onMemberJoined, onMemberLeft])
+
+  // Everyone: note host visibility changes in chat (initial value arrives
+  // via the isPublic prop and stays silent).
+  const seenPublicRef = useRef(isPublic)
+  useEffect(() => {
+    onVisibilityChanged?.(({ isPublic: pub }) => {
+      if (pub !== seenPublicRef.current) {
+        seenPublicRef.current = pub
+        addSystemMessage(pub ? 'Room is now public — listed in the room browser' : 'Room is now private')
+      }
+    })
+  }, [onVisibilityChanged])
+
+  // Everyone: note room lock changes in chat (initial value stays silent).
+  const seenLockedRef = useRef(locked)
+  useEffect(() => {
+    onLockChanged?.(({ locked: isLocked }) => {
+      if (isLocked !== seenLockedRef.current) {
+        seenLockedRef.current = isLocked
+        addSystemMessage(isLocked ? 'Room locked — new members cannot join' : 'Room unlocked — new members can join again')
+      }
+    })
+  }, [onLockChanged])
 
   const sendMessage = () => {
     const text = chatInput.trim()
@@ -405,6 +560,48 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
                 <LockIcon size={12} />
                 {code}
               </span>
+              {isHost ? (
+                <button
+                  className={`room__vis-toggle ${isPublic ? 'room__vis-toggle--public' : ''}`}
+                  id="btn-toggle-visibility"
+                  onClick={() => setVisibility?.(!isPublic)}
+                  title={
+                    isPublic
+                      ? 'Public — listed in the room browser. Click to make private'
+                      : 'Private — join with the code only. Click to make public'
+                  }
+                >
+                  {isPublic ? <GlobeIcon size={11} /> : <LockIcon size={11} />}
+                  {isPublic ? 'Public' : 'Private'}
+                </button>
+              ) : (
+                <span className="room__vis-toggle room__vis-toggle--static" title="Room visibility">
+                  {isPublic ? <GlobeIcon size={11} /> : <LockIcon size={11} />}
+                  {isPublic ? 'Public' : 'Private'}
+                </span>
+              )}
+              {locked && !isHost && (
+                <span className="room__vis-toggle room__vis-toggle--static room__vis-toggle--locked" title="New members cannot join">
+                  <LockIcon size={11} />
+                  Locked
+                </span>
+              )}
+              {isHost && !isPublic && (
+                <button
+                  className={`room__vis-toggle ${locked ? 'room__vis-toggle--locked' : ''}`}
+                  id="btn-toggle-lock"
+                  onClick={() => setLocked?.(!locked)}
+                  aria-pressed={locked}
+                  title={
+                    locked
+                      ? 'Locked — nobody can join while this is lit. Click to unlock'
+                      : 'Lock the room so nobody can join, even with the code'
+                  }
+                >
+                  {locked ? <LockIcon size={11} /> : <UnlockIcon size={11} />}
+                  Lock
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -508,6 +705,7 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
             isHost={isHost}
             showMembers={showMembers}
             members={members}
+            onKickMember={isHost ? handleKickMember : undefined}
             onSelectVideo={() => fileInputRef.current?.click()}
             onTogglePlay={togglePlay}
           />

@@ -129,9 +129,28 @@ export function UsersIcon(props) {
 
 export function LockIcon(props) {
   return (
-    <Svg fill="none" stroke="currentColor" strokeWidth="2.5" {...props}>
+    <Svg {...strokeProps} {...props}>
       <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
       <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </Svg>
+  )
+}
+
+export function UnlockIcon(props) {
+  return (
+    <Svg {...strokeProps} {...props}>
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+    </Svg>
+  )
+}
+
+export function GlobeIcon(props) {
+  return (
+    <Svg {...strokeProps} {...props}>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
     </Svg>
   )
 }
