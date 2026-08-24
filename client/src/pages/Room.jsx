@@ -40,7 +40,7 @@
  */
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { ArrowLeftIcon, UploadIcon, DownloadIcon, LinkIcon, GlobeIcon, LockIcon, UnlockIcon, UsersIcon, MaximizeIcon, MinimizeIcon } from '../components/Icons.jsx'
+import { ArrowLeftIcon, UploadIcon, DownloadIcon, LinkIcon, GlobeIcon, LockIcon, UnlockIcon, UsersIcon } from '../components/Icons.jsx'
 import VideoStage from '../components/VideoStage.jsx'
 import PlayerControls from '../components/PlayerControls.jsx'
 import ChatPanel from '../components/ChatPanel.jsx'
@@ -743,18 +743,18 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
                   }
                 >
                   {isPublic ? <GlobeIcon size={11} /> : <LockIcon size={11} />}
-                  {isPublic ? 'Public' : 'Private'}
+                  <span className="room__vis-label">{isPublic ? 'Public' : 'Private'}</span>
                 </button>
               ) : (
                 <span className="room__vis-toggle room__vis-toggle--static" title="Room visibility">
                   {isPublic ? <GlobeIcon size={11} /> : <LockIcon size={11} />}
-                  {isPublic ? 'Public' : 'Private'}
+                  <span className="room__vis-label">{isPublic ? 'Public' : 'Private'}</span>
                 </span>
               )}
               {locked && !isHost && (
                 <span className="room__vis-toggle room__vis-toggle--static room__vis-toggle--locked" title="New members cannot join">
                   <LockIcon size={11} />
-                  Locked
+                  <span className="room__vis-label">Locked</span>
                 </span>
               )}
               {isHost && !isPublic && (
@@ -770,7 +770,7 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
                   }
                 >
                   {locked ? <LockIcon size={11} /> : <UnlockIcon size={11} />}
-                  Lock
+                  <span className="room__vis-label">Lock</span>
                 </button>
               )}
             </div>
@@ -805,14 +805,6 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
           >
             <UsersIcon size={16} />
             <span className="room__action-label">{members.length}</span>
-          </button>
-          <button
-            className="room__action-btn"
-            id="btn-toggle-fullscreen"
-            onClick={toggleFullscreen}
-            title="Fullscreen"
-          >
-            {isFullscreen ? <MinimizeIcon size={16} /> : <MaximizeIcon size={16} />}
           </button>
         </div>
       </header>
@@ -904,6 +896,8 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
             currentTime={currentTime}
             duration={duration}
             videoName={displayName}
+            isFullscreen={isFullscreen}
+            onToggleFullscreen={toggleFullscreen}
             disabled={!syncEnabled}
           />
         </div>

@@ -851,10 +851,55 @@ button.room__vis-toggle--locked:hover {
   }
 
   .room__topbar {
-    padding: 0 10px;
+    height: auto;
+    min-height: 56px;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    row-gap: 6px;
+  }
+
+  .room__topbar-left {
+    flex: 1 1 auto;
+  }
+
+  .room__meta {
+    flex-wrap: wrap;
+    row-gap: 3px;
   }
 
   .room__name {
     font-size: 0.85rem;
+  }
+}
+
+/* Narrow phones: drop the role badge (conveyed by controls + tooltips),
+   tighten badge/button chrome so one row still fits */
+@media (max-width: 540px) {
+  .room__role-badge {
+    display: none;
+  }
+
+  .room__vis-toggle {
+    padding: 2px 6px;
+    gap: 3px;
+  }
+
+  .room__code-badge {
+    padding: 1px 6px;
+  }
+
+  .room__action-btn {
+    padding: 7px 9px;
+  }
+
+  .room__topbar-right {
+    gap: 6px;
+  }
+}
+
+/* Smallest tier: icon-only visibility/lock toggles (titles keep them usable) */
+@media (max-width: 400px) {
+  .room__vis-label {
+    display: none;
   }
 }

@@ -5,6 +5,8 @@ import {
   SkipForwardIcon,
   VolumeIcon,
   VolumeOffIcon,
+  MaximizeIcon,
+  MinimizeIcon,
 } from './Icons.jsx'
 import { formatTime } from '../lib/formatTime.js'
 
@@ -29,6 +31,8 @@ import { formatTime } from '../lib/formatTime.js'
  * @param {number} props.currentTime            seconds
  * @param {number} props.duration               seconds; 0 until metadata loads
  * @param {string} props.videoName              shown as "now playing", if any
+ * @param {boolean} [props.isFullscreen]        toggles the fullscreen icon
+ * @param {() => void} [props.onToggleFullscreen]
  * @param {boolean} [props.disabled]            gray out transport + seek when the
  *                                              active source can't be synced
  */
@@ -46,6 +50,8 @@ export default function PlayerControls({
   currentTime,
   duration,
   videoName,
+  isFullscreen = false,
+  onToggleFullscreen,
   disabled = false,
 }) {
   return (
@@ -129,6 +135,14 @@ export default function PlayerControls({
               {videoName.length > 30 ? videoName.slice(0, 30) + '…' : videoName}
             </span>
           )}
+          <button
+            className="room__ctrl-btn"
+            id="btn-toggle-fullscreen"
+            onClick={onToggleFullscreen}
+            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          >
+            {isFullscreen ? <MinimizeIcon size={18} /> : <MaximizeIcon size={18} />}
+          </button>
         </div>
       </div>
     </div>
