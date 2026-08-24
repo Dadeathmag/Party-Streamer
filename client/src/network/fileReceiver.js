@@ -1,18 +1,20 @@
 /**
  * @file fileReceiver — assembles a host-streamed file on the guest side.
  *
- * Handshake counterpart to fileSender.js. Two playback modes:
- *   - 'mse'  — fMP4/WebM: chunks append progressively into a MediaSource
- *              attached to the guest's <video>; playback starts early.
- *   - 'blob' — anything MSE rejects (or errors on mid-stream): chunks are
- *              retained and assembled into a Blob on FILE_COMPLETE.
+ * Handshake counterpart to fileSender.js. Two playback modes, chosen by the
+ * delivery flag on FILE_OFFER:
+ *   - 'mse'  (delivery 'progressive') — fMP4/WebM: chunks append straight
+ *             into a MediaSource attached to the guest's <video>; playback
+ *             starts early and memory stays flat (chunks are NOT retained).
+ *   - 'blob' (delivery 'full')        — every chunk is retained until
+ *             FILE_COMPLETE assembles a Blob → object URL. Nothing plays
+ *             until the whole file has arrived.
  *
- * An offer with delivery === 'full' (host's full-transfer streaming mode)
- * forces the blob path from the start — nothing plays until the whole file
- * has arrived.
- *
- * Chunks are ALWAYS retained until completion so a mid-stream MSE failure
- * degrades transparently into the blob path with zero data loss.
+ * There is deliberately NO fallback between them: the host's "full
+ * transfer" streaming mode IS the alternative. If MSE can't ingest the
+ * format — up front or mid-stream — a progressive transfer ABORTS with an
+ * actionable message pointing at full-transfer mode instead of silently
+ * degrading.
  */
 
 import { MSG, DELIVERY } from './roomProtocol.js'
@@ -100,41 +102,62 @@ export default class FileReceiver {
   /** @param {ArrayBuffer} buffer one sequential chunk of the file */
   handleBinary(buffer) {
     if (!this.offer || this.finished || this.mode === null) return
-    this.chunks.push(buffer)
     this.receivedBytes += buffer.byteLength
     if (this.offer.size > 0) {
       this.onProgress?.((this.receivedBytes / this.offer.size) * 100)
     }
-    if (this.mode === 'mse' && this.mse) {
+    if (this.mode === 'mse') {
+      // Progressive: bytes go straight into the SourceBuffer — nothing is
+      // retained, so memory stays flat regardless of file size.
       this.mse.append(buffer)
+    } else {
+      // Full transfer: retain every chunk until FILE_COMPLETE.
+      this.chunks.push(buffer)
     }
   }
 
   /**
    * Decide playback mode, wire the player, then green-light the sender.
    * delivery === 'full' skips MSE entirely: nothing is playable until the
-   * whole file has arrived and FILE_COMPLETE assembles the Blob.
+   * whole file has arrived and FILE_COMPLETE assembles the Blob. A
+   * progressive offer MSE can't handle aborts instead of degrading.
    */
   async _startPipeline() {
     const { mimeType } = this.offer
-    if (this.offer.delivery !== DELIVERY.FULL) {
-      try {
-        this.mse = await createMsePlayer(this.videoEl, mimeType, () => {
-          // Mid-stream decode failure → degrade to blob mode, keep counting.
-          this.mse = null
-          if (this.mode === 'mse' && !this.finished) {
-            this.mode = 'blob'
-            this._detachMediaSource()
-          }
-        })
-        this.mode = 'mse'
-      } catch {
-        this.mode = 'blob'
-      }
-    } else {
+    if (this.offer.delivery === DELIVERY.FULL) {
       this.mode = 'blob'
+      this.sendControl(MSG.FILE_ACCEPT)
+      return
+    }
+    try {
+      this.mse = await createMsePlayer(this.videoEl, mimeType, () => {
+        // Mid-stream decode failure — progressive has no fallback.
+        if (this.mode === 'mse' && !this.finished) {
+          this.mse = null
+          this._failProgressive('Playback failed mid-stream')
+        }
+      })
+      this.mode = 'mse'
+    } catch {
+      this._failProgressive('This browser cannot progressively play that format')
+      return
     }
     this.sendControl(MSG.FILE_ACCEPT)
+  }
+
+  /**
+   * Abort a progressive transfer that MSE cannot carry, tell the host why,
+   * and surface an actionable error to the guest UI.
+   * @param {string} why short human-readable cause
+   */
+  _failProgressive(why) {
+    const name = this.offer?.name || 'the video'
+    const err = new Error(
+      `${why} ("${name}") — host can switch streaming to "Full transfer"`,
+    )
+    this.reset(false)
+    this.sendControl(MSG.FILE_ABORT, { reason: why })
+    this.onFailed?.(err)
   }
 
   _detachMediaSource() {
@@ -154,8 +177,6 @@ export default class FileReceiver {
 
     if (this.mode === 'mse' && this.mse) {
       this.mse.endOfStream()
-      // Whole file lives in the SourceBuffer now — free the raw chunks.
-      this.chunks = []
       this.onComplete?.({ url: null, name: this.offer.name })
       return
     }

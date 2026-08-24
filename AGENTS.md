@@ -78,8 +78,9 @@ client/                          React 19 + Vite, ESM
     │                            ICE queueing, drain-wait backpressure helper)
     │   ├── fileSender.js        lazy File.slice() streaming with bufferedAmount
     │                            high/low-water pause-resume, accept timeout, abort
-    │   └── fileReceiver.js      handshake counterpart: progressive MSE append or
-    │                            Blob fallback assembly → object URL for <video>
+    │   └── fileReceiver.js      handshake counterpart: progressive MSE append
+    │                            (failures abort — no fallback) or full-blob
+    │                            assembly → object URL for <video>
     ├── lib/
     │   ├── formatTime.js        pure helpers
     │   └── msePlayer.js         MediaSource wrapper (isTypeSupported gate, queued
@@ -256,11 +257,13 @@ Config (env vars): `PORT` (server, default 3002), `CLIENT_ORIGIN`
    fallback — guests dedupe via `seq`). Pause the host tab for ~10 s, resume,
    and watch the guest snap/nudge back into step within one beacon interval.
 6. With the video still selected, watch the guest tab: "Receiving …%" overlay
-   appears, then the video becomes playable (MSE) or assembles and swaps in
-   (Blob fallback for non-MSE formats). A guest joining AFTER selection gets
-   the file automatically once its DataChannel opens. A guest joining while
-   the host is PLAYING starts (or is pulled) to the host position by the next
-   SYNC_BEACON within ~5 s of its DataChannel opening.
+   appears, then the video becomes playable (MSE). A guest joining AFTER
+   selection gets the file automatically once its DataChannel opens. A guest
+   joining while the host is PLAYING starts (or is pulled) to the host
+   position by the next SYNC_BEACON within ~5 s of its DataChannel opening.
+7. Pick a format MSE can't ingest (e.g. some AVI/MKV) in 'p2p' mode → the
+   guest's transfer aborts with an actionable error; switching the host to
+   'full' mode re-sends and plays via Blob assembly.
 
 Automated equivalent: `npm test --prefix server` covers the whole event
 surface including non-host sync rejection and host-disconnect teardown.
@@ -281,9 +284,10 @@ Do not silently change these without updating project.md's deviation list:
    dual-sends every host command until DataChannel parity is proven in the
    wild; then `sendPlaybackSync` + the relay listener can be deleted.
 5. **No shareable room URLs** (`/room/:code`) yet.
-6. **Video transfer memory ceiling** — guests retain every chunk until
-   completion (enables transparent MSE→Blob fallback), so RAM use peaks at
+6. **Full-transfer memory ceiling** — 'full' mode guests retain every chunk
+   until completion (that's the point of the mode), so RAM use peaks at
    ~file size; multi-GB files are impractical until chunks spill to OPFS.
+   Progressive ('p2p') playback no longer retains chunks — memory stays flat.
 7. **Seeking beyond buffered data stalls** on guests mid-transfer (no range
    requests yet); full seek works after FILE_COMPLETE.
 

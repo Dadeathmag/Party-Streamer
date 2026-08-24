@@ -22,7 +22,8 @@
  *
  * Media distribution: the host picks a streaming mode in the mode bar —
  *   'p2p'   local file streamed P2P in chunks, played progressively via MSE
- *           (Blob fallback for formats MSE can't ingest; network/fileSender.js)
+ *           (formats MSE can't ingest abort with an error — use 'full';
+ *           network/fileSender.js + fileReceiver.js)
  *   'full'  same P2P transfer, but guests only get playback after the whole
  *           file has arrived (delivery:'full' on FILE_OFFER)
  *   'url'   host pastes a direct media URL that every client loads itself;

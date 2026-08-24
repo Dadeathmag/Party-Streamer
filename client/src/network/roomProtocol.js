@@ -27,7 +27,9 @@
  * waiting for the next interaction; see usePeerNetwork for drift handling.
  *
  * `delivery` on FILE_OFFER tells the guest how to play what arrives:
- *   - 'progressive' — try MSE first so playback can start mid-transfer
+ *   - 'progressive' — MSE only: playback starts mid-transfer, memory stays
+ *                     flat; formats MSE can't ingest ABORT (no silent
+ *                     blob fallback — use 'full' for those)
  *   - 'full'        — buffer everything and only assemble a Blob at
  *                     FILE_COMPLETE (host's "full transfer" streaming mode)
  *
