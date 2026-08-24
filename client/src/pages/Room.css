@@ -295,6 +295,20 @@ button.room__vis-toggle--locked:hover {
   border: 0;
 }
 
+/* Escape hatch shown under a fatal embed error: lets users verify the link
+   plays outside the embed (provider error screens are invisible to us). */
+.room__embed-open-original {
+  margin-top: 12px;
+  color: var(--accent-bright);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.room__embed-open-original:hover {
+  text-decoration: underline;
+}
+
 .room__embed-loading {
   position: absolute;
   inset: 0;

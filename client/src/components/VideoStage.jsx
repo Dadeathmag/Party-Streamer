@@ -24,6 +24,10 @@ import MembersPopup from './MembersPopup.jsx'
  * @param {React.RefObject} [props.embedContainerRef]
  *                                              ref for the embed mount point
  * @param {string | null} [props.embedError]    fatal embed load/play message
+ * @param {string | null} [props.embedSourceUrl]
+ *                                              original pasted link, offered
+ *                                              as an "open original" escape
+ *                                              hatch when the embed errors
  * @param {boolean} props.isHost                host sees a click-to-select empty state
  * @param {Array<object>} [props.bullets]       active danmaku bullets (fullscreen only)
  * @param {(id: number) => void} [props.onBulletExpire]
@@ -44,6 +48,7 @@ export default function VideoStage({
   embedUrl = null,
   embedContainerRef,
   embedError = null,
+  embedSourceUrl = null,
   isHost,
   bullets,
   onBulletExpire,
@@ -73,10 +78,23 @@ export default function VideoStage({
         <div className="room__embed-layer">
           <div className="room__embed-frame" ref={embedContainerRef} />
           {embedError ? (
-            <div className="room__embed-loading room__embed-loading--error">
-              <LinkIcon size={22} />
-              <span>{embedError}</span>
-            </div>
+            <>
+              <div className="room__embed-loading room__embed-loading--error">
+                <LinkIcon size={22} />
+                <span>{embedError}</span>
+              </div>
+              {embedSourceUrl && (
+                <a
+                  className="room__embed-open-original"
+                  id="link-open-original"
+                  href={embedSourceUrl}
+                  target="_blank"
+                  rel="noopener"
+                >
+                  Open original link ↗
+                </a>
+              )}
+            </>
           ) : (
             !mediaReady && (
               <div className="room__embed-loading">

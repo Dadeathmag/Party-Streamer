@@ -184,16 +184,42 @@ function guard(fn, onError) {
 
 // ── YouTube ────────────────────────────────────────────────────────────────
 
+/**
+ * Human-readable messages for YouTube's onError codes (IFrame API reference).
+ * 101/150 mean the uploader forbids embedding — unfixable client-side, so
+ * the message points at alternatives. 153 means YouTube rejected our
+ * API-client identity (missing Referer/origin) — a player-config problem.
+ */
+const YT_ERROR_MESSAGES = {
+  2: 'That YouTube link looks invalid — check the URL.',
+  5: 'YouTube cannot play this video in the browser player.',
+  100: 'This video was removed or made private on YouTube.',
+  101: 'The uploader disabled playback on other sites. Try another upload, or stream the file via P2P/full mode.',
+  150: 'The uploader disabled playback on other sites. Try another upload, or stream the file via P2P/full mode.',
+  153: 'YouTube rejected this site\'s player identity — try reloading the page.',
+}
+
 async function createYouTubeSurface(container, parsedLink, handlers) {
   await loadYouTubeApi()
 
-  const mount = document.createElement('div')
-  mount.style.width = '100%'
-  mount.style.height = '100%'
-  container.appendChild(mount)
+  // Build the iframe OURSELVES so identity/permission attributes are in
+  // place BEFORE first load — setting them afterwards has no effect until
+  // src reloads (see YT error 153 / "API Client Identity and Credentials").
+  // The IFrame API then attaches to this existing element (documented
+  // pattern): the src must carry enablejsapi=1 + origin for that to work.
+  const [embedBase, embedQuery] = parsedLink.embedUrl.split('?')
+  const params = new URLSearchParams(embedQuery || '')
+  params.set('enablejsapi', '1')
+  params.set('origin', window.location.origin)
 
-  // videoId is everything after /embed/ in our generated embed URL.
-  const videoId = parsedLink.embedUrl.split('/embed/')[1]?.split('?')[0]
+  const iframe = document.createElement('iframe')
+  iframe.src = `${embedBase}?${params}`
+  iframe.referrerPolicy = 'strict-origin-when-cross-origin'
+  iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
+  iframe.allowFullscreen = true
+  iframe.className = 'room__embed-iframe'
+  iframe.setAttribute('title', 'YouTube player')
+  container.appendChild(iframe)
 
   const core = createSurfaceCore({
     getTimeRaw: () => player.getCurrentTime(),
@@ -201,10 +227,11 @@ async function createYouTubeSurface(container, parsedLink, handlers) {
     onMeta: handlers.onMeta,
   })
 
-  // The IFrame API attaches its methods (playVideo, mute, …) asynchronously:
-  // until `onReady` fires they don't exist on the player object and any call
-  // throws "x is not a function". Commands issued before readiness are
-  // buffered here and flushed in order on onReady.
+  // Attaching to an existing iframe: the API reuses its src, so no videoId
+  // here. The IFrame API attaches its methods (playVideo, mute, …)
+  // asynchronously: until `onReady` fires they don't exist on the player
+  // object and any call throws "x is not a function". Commands issued
+  // before readiness are buffered here and flushed in order on onReady.
   let player = null
   let ready = false
   let destroyed = false
@@ -214,11 +241,9 @@ async function createYouTubeSurface(container, parsedLink, handlers) {
     else if (!destroyed) pending.push(fn)
   }
 
-  player = new window.YT.Player(mount, {
-    videoId,
+  player = new window.YT.Player(iframe, {
     width: '100%',
     height: '100%',
-    playerVars: { rel: 0, playsinline: 1, modestbranding: 1 },
     events: {
       onReady: () => {
         ready = true
@@ -234,8 +259,10 @@ async function createYouTubeSurface(container, parsedLink, handlers) {
           handlers.onEnded?.()
         }
       },
-      onError: () => {
-        handlers.onError?.('YouTube refused to play this video here (embedding may be disabled).')
+      onError: (e) => {
+        const code = e?.data
+        const base = YT_ERROR_MESSAGES[code] || 'YouTube refused to play this video.'
+        handlers.onError?.(code ? `${base} (YouTube error ${code})` : base)
       },
     },
   })

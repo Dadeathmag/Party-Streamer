@@ -142,7 +142,10 @@ export function parseLink(rawUrl, hostname = defaultHostname()) {
         kind: LINK_KINDS.YOUTUBE,
         sourceUrl: trimmed,
         playbackUrl: null,
-        embedUrl: `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?${params}`,
+        // www.youtube.com rather than youtube-nocookie.com — the nocookie
+        // host has had intermittent TLS/availability issues (2026) and the
+        // regular host is what YouTube's own embed docs use.
+        embedUrl: `https://www.youtube.com/embed/${encodeURIComponent(id)}?${params}`,
         label: providerLabel('YouTube', id),
         driveHack: false,
         uncertain: false,

@@ -66,6 +66,9 @@ const STREAM_MODE_HINTS = {
   url: 'Everyone loads the shared link directly — no P2P transfer.',
 }
 
+/** How long a provider embed may ignore play before we surface diagnostics. */
+const EMBED_STALL_TIMEOUT_MS = 8000
+
 /**
  * @param {object} props
  * @param {{ name: string, code: string, role: 'host'|'member', displayName: string }} props.roomInfo
@@ -204,6 +207,28 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
     }])
   }
 
+  // Embed-stall watchdog: provider iframes (YouTube especially) sometimes
+  // render their OWN error screen — "Playback error", bot-checks, ad-block
+  // interference — WITHOUT firing the API onError event, and the cross-
+  // origin wall hides it from us. If a play command gets no playing state
+  // back within EMBED_STALL_TIMEOUT_MS, surface targeted hints in chat once.
+  const stallTimerRef = useRef(null)
+  const clearStallWatchdog = useCallback(() => {
+    if (stallTimerRef.current) {
+      clearTimeout(stallTimerRef.current)
+      stallTimerRef.current = null
+    }
+  }, [])
+  const startStallWatchdog = useCallback(() => {
+    clearStallWatchdog()
+    stallTimerRef.current = setTimeout(() => {
+      stallTimerRef.current = null
+      addSystemMessage(
+        'The embedded player is not responding to play commands. Its own error screen often means an ad-blocker/extension is interfering or YouTube demands sign-in — try disabling shields for this site and reloading, or open the original link to check it plays there.'
+      )
+    }, EMBED_STALL_TIMEOUT_MS)
+  }, [clearStallWatchdog])
+
   // Auto-scroll chat to the latest message.
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -325,13 +350,14 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
   const embedPlayStateRef = useRef(null)
   useEffect(() => {
     embedPlayStateRef.current = (playing) => {
+      if (playing) clearStallWatchdog()
       setIsPlaying(playing)
       if (!isHost || !syncEnabled) return
       if (playing === lastEmbedPlayStateRef.current) return
       lastEmbedPlayStateRef.current = playing
       broadcastPlayback?.(playing ? 'play' : 'pause', getSurface()?.getTime() ?? 0)
     }
-  }, [isHost, syncEnabled, broadcastPlayback, getSurface])
+  }, [isHost, syncEnabled, broadcastPlayback, getSurface, clearStallWatchdog])
 
   // Mount/unmount the provider-embed controller for non-direct links.
   // StrictMode-safe: async creation adopts the surface only if this mount is
@@ -339,6 +365,7 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
   useEffect(() => {
     embedSurfaceRef.current = null
     lastEmbedPlayStateRef.current = false
+    clearStallWatchdog()
     if (!embedLink) return undefined
 
     let disposed = false
@@ -357,6 +384,7 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
       onEnded: () => { if (!disposed) setIsPlaying(false) },
       onError: (message) => {
         if (disposed) return
+        clearStallWatchdog()
         setEmbedError(message)
         addSystemMessage(`Link playback problem: ${message}`)
       },
@@ -383,10 +411,11 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
 
     return () => {
       disposed = true
+      clearStallWatchdog()
       embedSurfaceRef.current?.destroy()
       embedSurfaceRef.current = null
     }
-  }, [embedLink])
+  }, [embedLink, clearStallWatchdog])
 
   // ── Host sync application (guests, both transports) ──────────────────────
 
@@ -564,6 +593,9 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
     const next = !isPlaying
     if (next) surface.play()
     else surface.pause()
+    // Embeds: while we wait to hear PLAYING back, watch for a stall —
+    // providers can fail silently inside their own iframe UI.
+    if (embedLink) next ? startStallWatchdog() : clearStallWatchdog()
     if (isHost && syncEnabled) {
       if (embedLink) {
         // The provider will echo this state back via onPlayState; mark it
@@ -907,6 +939,7 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
             embedUrl={embedLink?.embedUrl || null}
             embedContainerRef={embedContainerRef}
             embedError={embedError}
+            embedSourceUrl={embedLink?.sourceUrl || null}
             isHost={isHost}
             bullets={bullets}
             onBulletExpire={expireBullet}
