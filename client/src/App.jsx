@@ -24,10 +24,10 @@ function App() {
   const peerNet = usePeerNetwork(socket)
 
   const handleEnterRoom = async (info) => {
-    const { displayName, name, code, role } = info
+    const { displayName, name, code, role, isPublic } = info
 
     if (role === 'host') {
-      const res = await socket.createRoom(name, code, displayName)
+      const res = await socket.createRoom(name, code, displayName, isPublic)
       if (!res.ok) return // error is set inside the hook
     } else {
       const res = await socket.joinRoom(code, displayName)
@@ -53,6 +53,7 @@ function App() {
           onEnterRoom={handleEnterRoom}
           error={socket.error}
           connecting={socket.connecting}
+          listRooms={socket.listRooms}
         />
       )}
       {page === 'room' && (
@@ -62,18 +63,32 @@ function App() {
           members={socket.members}
           connected={socket.connected}
           myId={socket.myId}
-          sendPlaybackSync={socket.sendPlaybackSync}
           onPlaybackSync={socket.onPlaybackSync}
           sendChat={socket.sendChat}
           onChatMessage={socket.onChatMessage}
           onMemberJoined={socket.onMemberJoined}
           onMemberLeft={socket.onMemberLeft}
           onHostLeft={socket.onHostLeft}
+          isPublic={socket.isPublic}
+          locked={socket.locked}
+          setVisibility={socket.setVisibility}
+          setLocked={socket.setLocked}
+          kickMember={socket.kickMember}
+          onKicked={socket.onKicked}
+          onVisibilityChanged={socket.onVisibilityChanged}
+          onLockChanged={socket.onLockChanged}
           sendFile={peerNet.sendFile}
+          cancelTransfers={peerNet.cancelTransfers}
           registerVideoElement={peerNet.registerVideoElement}
+          broadcastPlayback={peerNet.broadcastPlayback}
+          broadcastBeacon={peerNet.broadcastBeacon}
           transferStatus={peerNet.transferStatus}
           onRemoteVideoReady={peerNet.onRemoteVideoReady}
           onTransferError={peerNet.onTransferError}
+          onPeerPlaybackSync={peerNet.onPeerPlaybackSync}
+          streamMode={socket.streamMode}
+          sendStreamMode={socket.sendStreamMode}
+          onStreamModeChanged={socket.onStreamModeChanged}
         />
       )}
     </>

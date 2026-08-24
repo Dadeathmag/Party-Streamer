@@ -77,12 +77,25 @@ function ensureConnected(socket, timeoutMs = CONNECT_TIMEOUT_MS) {
  *   connected  — boolean, true when socket is connected
  *   myId       — string | null, this client's current socket id
  *   members    — array of { socketId, displayName, role }
+ *   streamMode — { type: 'p2p'|'full'|'url', url: string|null } | null,
+ *                the room's current streaming mode (host-controlled; see
+ *                server streamHandlers.js)
+ *   isPublic   — boolean, whether the room is listed publicly (host-set)
+ *   locked     — boolean, true when the host has locked the room against
+ *                new joins (private rooms; see server roomAdminHandlers.js)
  *   error      — string | null, last error message
  *   connecting — boolean, true while a create/join is in-flight
- *   createRoom(name, code, displayName) → Promise<response>
+ *   createRoom(name, code, displayName, isPublic?) → Promise<response>
  *   joinRoom(code, displayName)         → Promise<response>
  *   leaveRoom()
- *   sendPlaybackSync(action, time)
+ *   setVisibility(isPublic)             → Promise<{ ok, isPublic?, error? }>  (host only)
+ *   setLocked(locked)                   → Promise<{ ok, locked?, error? }>    (host only)
+ *   listRooms()                         → Promise<{ ok, rooms? }>            (discovery)
+ *   kickMember(socketId)                → Promise<{ ok, error? }>            (host only)
+ *   sendStreamMode(type, url) → Promise<{ ok, mode?, error? }>  (host only)
+ *   sendPlaybackSync(action, time, seq?) — fallback relay (host only);
+ *     `seq` (from usePeerNetwork) lets guests dedupe against the
+ *     DataChannel copy of the same command
  *   onPlaybackSync(callback) — register a listener for incoming sync events
  *   sendChat(text)
  *   onChatMessage(callback)  — register a listener for incoming chat messages
@@ -90,8 +103,16 @@ function ensureConnected(socket, timeoutMs = CONNECT_TIMEOUT_MS) {
  *   onMemberJoined(callback) — register a listener for other members joining
  *                              (receives their displayName)
  *   onMemberLeft(callback)   — register a listener for other members leaving
- *                              (receives their displayName)
+ *                              (receives { displayName, kicked })
  *   onHostLeft(callback)     — register a listener for host-left events
+ *   onVisibilityChanged(cb)  — live visibility changes ({ isPublic });
+ *                              initial state comes via the isPublic value
+ *   onLockChanged(cb)        — live lock changes ({ locked }); initial
+ *                              state comes via the locked value
+ *   onKicked(cb)             — this client was removed from the room
+ *   onStreamModeChanged(cb)  — register a listener for live streaming-mode
+ *                              changes ({ type, url }); initial state comes
+ *                              via the streamMode value instead
  *   sendSignal(to, kind, payload) — relay WebRTC signaling to a peer
  *   onSignal(callback)       — incoming signaling: { from, kind, payload }
  */
@@ -100,6 +121,9 @@ export default function useSocket() {
   const [connected, setConnected] = useState(false)
   const [myId, setMyId] = useState(null)
   const [members, setMembers] = useState([])
+  const [streamMode, setStreamMode] = useState(null)
+  const [isPublic, setIsPublic] = useState(false)
+  const [locked, setLockedState] = useState(false)
   const [error, setError] = useState(null)
   const [connecting, setConnecting] = useState(false)
 
@@ -110,6 +134,10 @@ export default function useSocket() {
   const memberLeftCbRef = useRef(null)
   const hostLeftCbRef = useRef(null)
   const signalCbRef = useRef(null)
+  const streamModeChangedCbRef = useRef(null)
+  const visibilityChangedCbRef = useRef(null)
+  const lockChangedCbRef = useRef(null)
+  const kickedCbRef = useRef(null)
 
   // ── Initialise socket once on mount ──────────────────────────────────────
   useEffect(() => {
@@ -148,19 +176,44 @@ export default function useSocket() {
       if (displayName) memberJoinedCbRef.current?.(displayName)
     })
 
-    socket.on('room:member-left', ({ displayName, members: m }) => {
+    socket.on('room:member-left', ({ displayName, members: m, kicked }) => {
       setMembers(m)
-      if (displayName) memberLeftCbRef.current?.(displayName)
+      if (displayName) memberLeftCbRef.current?.({ displayName, kicked: !!kicked })
     })
 
     socket.on('room:host-left', () => {
       setMembers([])
+      setStreamMode(null)
+      setIsPublic(false)
+      setLockedState(false)
       hostLeftCbRef.current?.()
+    })
+
+    // ── Room admin (visibility/lock/kick; see roomAdminHandlers.js) ──────
+    socket.on('room:visibility-changed', ({ isPublic: pub }) => {
+      setIsPublic(!!pub)
+      visibilityChangedCbRef.current?.({ isPublic: !!pub })
+    })
+
+    socket.on('room:lock-changed', ({ locked: isLocked }) => {
+      setLockedState(!!isLocked)
+      lockChangedCbRef.current?.({ locked: !!isLocked })
+    })
+
+    socket.on('room:kicked', () => {
+      kickedCbRef.current?.()
     })
 
     // ── Playback sync (incoming, for non-hosts) ──────────────────────────
     socket.on('playback:sync', (data) => {
       playbackSyncCbRef.current?.(data)
+    })
+
+    // ── Streaming mode (host-controlled, echoed to the host too) ─────────
+    socket.on('stream:mode-changed', ({ type, url }) => {
+      const mode = { type, url: url ?? null }
+      setStreamMode(mode)
+      streamModeChangedCbRef.current?.(mode)
     })
 
     // ── Chat (incoming, includes the sender's own echo) ──────────────────
@@ -182,7 +235,7 @@ export default function useSocket() {
   }, [])
 
   // ── Create Room ─────────────────────────────────────────────────────────
-  const createRoom = useCallback(async (name, code, displayName) => {
+  const createRoom = useCallback(async (name, code, displayName, isPublic = false) => {
     const socket = socketRef.current
 
     setConnecting(true)
@@ -196,12 +249,15 @@ export default function useSocket() {
     }
 
     const res = await new Promise((resolve) => {
-      socket.emit('room:create', { name, code, displayName }, resolve)
+      socket.emit('room:create', { name, code, displayName, isPublic }, resolve)
     })
 
     setConnecting(false)
     if (res.ok) {
       setMembers(res.members)
+      setStreamMode(res.streamMode ?? null)
+      setIsPublic(!!res.isPublic)
+      setLockedState(!!res.locked)
       setError(null)
     } else {
       setError(res.error)
@@ -230,6 +286,9 @@ export default function useSocket() {
     setConnecting(false)
     if (res.ok) {
       setMembers(res.members)
+      setStreamMode(res.streamMode ?? null)
+      setIsPublic(!!res.isPublic)
+      setLockedState(!!res.locked)
       setError(null)
     } else {
       setError(res.error)
@@ -243,14 +302,74 @@ export default function useSocket() {
     if (!socket?.connected) return
     socket.emit('room:leave')
     setMembers([])
+    setStreamMode(null)
+    setIsPublic(false)
+    setLockedState(false)
     setError(null)
   }, [])
 
-  // ── Playback Sync (outgoing, for host) ──────────────────────────────────
-  const sendPlaybackSync = useCallback((action, time) => {
+  // ── Room admin (host; see roomAdminHandlers.js) ─────────────────────────
+  const setVisibility = useCallback(async (isPublic) => {
+    const socket = socketRef.current
+    if (!(await ensureConnected(socket))) {
+      return { ok: false, error: 'Not connected to the server.' }
+    }
+    return new Promise((resolve) => {
+      socket.emit('room:set-visibility', { isPublic }, resolve)
+    })
+  }, [])
+
+  const setLocked = useCallback(async (locked) => {
+    const socket = socketRef.current
+    if (!(await ensureConnected(socket))) {
+      return { ok: false, error: 'Not connected to the server.' }
+    }
+    return new Promise((resolve) => {
+      socket.emit('room:set-locked', { locked }, resolve)
+    })
+  }, [])
+
+  const listRooms = useCallback(async () => {
+    const socket = socketRef.current
+    if (!(await ensureConnected(socket))) {
+      return { ok: false, error: 'Not connected to the server.' }
+    }
+    return new Promise((resolve) => {
+      socket.emit('room:list', null, resolve)
+    })
+  }, [])
+
+  const kickMember = useCallback(async (socketId) => {
+    const socket = socketRef.current
+    if (!(await ensureConnected(socket))) {
+      return { ok: false, error: 'Not connected to the server.' }
+    }
+    return new Promise((resolve) => {
+      socket.emit('room:kick', { socketId }, resolve)
+    })
+  }, [])
+
+  // ── Streaming mode (outgoing, for host) ─────────────────────────────────
+  const sendStreamMode = useCallback(async (type, url = null) => {
+    const socket = socketRef.current
+    if (!(await ensureConnected(socket))) {
+      return { ok: false, error: 'Not connected to the server.' }
+    }
+    return new Promise((resolve) => {
+      socket.emit('stream:set-mode', { type, url }, resolve)
+    })
+  }, [])
+
+  // ── Playback Sync (outgoing fallback relay, for host) ────────────────────
+  // Primary transport is the host's DataChannels (usePeerNetwork); this
+  // Socket.IO relay stays until DataChannel parity is proven. `seq` tags a
+  // command so guests that receive it over both transports apply it once.
+  const sendPlaybackSync = useCallback((action, time, seq) => {
     const socket = socketRef.current
     if (!socket?.connected) return
-    socket.emit('playback:sync', { action, time })
+    const payload =
+      typeof seq === 'number' ? { action, time, seq } : { action, time }
+    socket.emit('playback:sync', payload)
   }, [])
 
   // ── Chat (outgoing; the server echoes it back to everyone incl. sender) ─
@@ -290,19 +409,43 @@ export default function useSocket() {
     hostLeftCbRef.current = cb
   }, [])
 
+  const onStreamModeChanged = useCallback((cb) => {
+    streamModeChangedCbRef.current = cb
+  }, [])
+
   const onSignal = useCallback((cb) => {
     signalCbRef.current = cb
+  }, [])
+
+  const onVisibilityChanged = useCallback((cb) => {
+    visibilityChangedCbRef.current = cb
+  }, [])
+
+  const onLockChanged = useCallback((cb) => {
+    lockChangedCbRef.current = cb
+  }, [])
+
+  const onKicked = useCallback((cb) => {
+    kickedCbRef.current = cb
   }, [])
 
   return {
     connected,
     myId,
     members,
+    streamMode,
+    isPublic,
+    locked,
     error,
     connecting,
     createRoom,
     joinRoom,
     leaveRoom,
+    setVisibility,
+    setLocked,
+    listRooms,
+    kickMember,
+    sendStreamMode,
     sendPlaybackSync,
     onPlaybackSync,
     sendChat,
@@ -310,6 +453,10 @@ export default function useSocket() {
     onMemberJoined,
     onMemberLeft,
     onHostLeft,
+    onStreamModeChanged,
+    onVisibilityChanged,
+    onLockChanged,
+    onKicked,
     sendSignal,
     onSignal,
   }

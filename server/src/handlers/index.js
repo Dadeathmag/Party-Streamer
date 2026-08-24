@@ -15,6 +15,8 @@ const {
   registerDisconnectHandler,
 } = require('./playbackHandlers');
 const { registerChatHandlers } = require('./chatHandlers');
+const { registerStreamHandlers } = require('./streamHandlers');
+const { registerRoomAdminHandlers } = require('./roomAdminHandlers');
 
 /**
  * Attach all event handlers to every incoming connection.
@@ -30,6 +32,8 @@ function registerHandlers(io, store) {
     registerSignalHandlers(io, socket);
     registerPlaybackHandlers(io, socket, store);
     registerChatHandlers(io, socket, store);
+    registerStreamHandlers(io, socket, store);
+    registerRoomAdminHandlers(io, socket, store);
     registerDisconnectHandler(io, socket, store);
   });
 }

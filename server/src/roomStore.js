@@ -9,7 +9,9 @@
  *
  * Data layout:
  *   rooms          Map<code, Room>
- *     Room = { code, name, hostId, members: Map<socketId, Member> }
+ *     Room = { code, name, hostId, isPublic, locked,
+ *              members: Map<socketId, Member>,
+ *              streamMode: { type: 'p2p'|'full'|'url', url: string|null } | null }
  *     Member = { displayName, role: 'host' | 'member' }
  *   socketToRoom   Map<socketId, code>      — reverse index for O(1) lookups
  *   guestCounters  Map<code, number>        — next "Guest-N" number per room
@@ -91,13 +93,15 @@ class RoomStore {
   /**
    * Create a brand-new room owned by the given socket.
    *
-   * @param {{ name: string, code: string, hostId: string, displayName?: string }} params
+   * @param {{ name: string, code: string, hostId: string, displayName?: string,
+   *           isPublic?: boolean }} params
    *   `code` is expected pre-normalised (upper-case). `displayName` is an
-   *   optional custom host name; defaults to "Host".
+   *   optional custom host name; defaults to "Host". `isPublic` marks the
+   *   room discoverable via listPublicRooms() (default: private).
    * @returns {{ ok: true, room: object, members: object[] } |
    *           { ok: false, error: string }}
    */
-  createHostRoom({ name, code, hostId, displayName }) {
+  createHostRoom({ name, code, hostId, displayName, isPublic }) {
     if (this.rooms.has(code)) {
       return { ok: false, error: 'A room with that code already exists.' };
     }
@@ -106,7 +110,10 @@ class RoomStore {
       code,
       name,
       hostId,
+      isPublic: !!isPublic,
+      locked: false,
       members: new Map(),
+      streamMode: null,
     };
     room.members.set(
       hostId,
@@ -146,6 +153,97 @@ class RoomStore {
     this.socketToRoom.set(socketId, code);
 
     return { ok: true, room, displayName: finalName, members: this.serialiseMembers(room) };
+  }
+
+  /**
+   * Store the room's current streaming mode (host-authoritative). The payload
+   * shape is validated by the handler; the store just keeps it verbatim.
+   *
+   * @param {string} code
+   * @param {{ type: string, url: string | null }} mode
+   * @returns {object | null} the stored mode, or null when the room is gone
+   */
+  setStreamMode(code, mode) {
+    const room = this.rooms.get(code);
+    if (!room) return null;
+    room.streamMode = mode;
+    return room.streamMode;
+  }
+
+  /**
+   * Store the room's visibility flag (host-authoritative).
+   *
+   * @param {string} code
+   * @param {boolean} isPublic
+   * @returns {boolean | null} the stored flag, or null when the room is gone
+   */
+  setRoomVisibility(code, isPublic) {
+    const room = this.rooms.get(code);
+    if (!room) return null;
+    room.isPublic = !!isPublic;
+    return room.isPublic;
+  }
+
+  /**
+   * Store the room's locked flag (host-authoritative). A locked room rejects
+   * every incoming join, even with the correct code.
+   *
+   * @param {string} code
+   * @param {boolean} locked
+   * @returns {boolean | null} the stored flag, or null when the room is gone
+   */
+  setLocked(code, locked) {
+    const room = this.rooms.get(code);
+    if (!room) return null;
+    room.locked = !!locked;
+    return room.locked;
+  }
+
+  /**
+   * Snapshot of every public room for discovery listings. Private rooms are
+   * never included — joining them requires knowing the exact code.
+   *
+   * @returns {Array<{ code: string, name: string, hostName: string, memberCount: number }>}
+   */
+  listPublicRooms() {
+    const out = [];
+    for (const room of this.rooms.values()) {
+      if (!room.isPublic) continue;
+      let hostName = 'Host';
+      for (const info of room.members.values()) {
+        if (info.role === 'host') hostName = info.displayName;
+      }
+      out.push({
+        code: room.code,
+        name: room.name,
+        hostName,
+        memberCount: room.members.size,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Remove a regular member from a room (host-initiated kick). The host
+   * itself can never be removed through this path.
+   *
+   * @param {string} code
+   * @param {string} socketId target member's socket id
+   * @returns {{ ok: true, displayName: string, members: object[] } |
+   *           { ok: false, error: string }}
+   */
+  removeMember(code, socketId) {
+    const room = this.rooms.get(code);
+    if (!room) return { ok: false, error: 'Room not found.' };
+
+    const member = room.members.get(socketId);
+    if (!member) return { ok: false, error: 'That member is not in the room.' };
+    if (member.role === 'host') return { ok: false, error: 'The host cannot be removed.' };
+
+    room.members.delete(socketId);
+    this.socketToRoom.delete(socketId);
+
+    return { ok: true, displayName: member.displayName, members: this.serialiseMembers(room) };
   }
 
   /**

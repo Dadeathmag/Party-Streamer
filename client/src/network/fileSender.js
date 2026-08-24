@@ -16,6 +16,7 @@
 import Peer from './peer.js' // eslint-disable-line no-unused-vars -- JSDoc type
 import {
   MSG,
+  DELIVERY,
   encodeMessage,
   HIGH_WATER_MARK,
   LOW_WATER_MARK,
@@ -28,13 +29,15 @@ export default class FileSender {
    * @param {object} opts
    * @param {Peer} opts.peer            connected peer (channel must be open)
    * @param {File} opts.file            the video file selected by the host
+   * @param {string} [opts.delivery]    'progressive' (default) or 'full'
    * @param {(pct: number) => void} [opts.onProgress]
    * @param {(info: { name: string }) => void} [opts.onComplete]
    * @param {(err: Error) => void} [opts.onError]
    */
-  constructor({ peer, file, onProgress, onComplete, onError }) {
+  constructor({ peer, file, delivery = DELIVERY.PROGRESSIVE, onProgress, onComplete, onError }) {
     this.peer = peer
     this.file = file
+    this.delivery = delivery
     this.onProgress = onProgress
     this.onComplete = onComplete
     this.onError = onError
@@ -56,6 +59,7 @@ export default class FileSender {
       name: this.file.name,
       size: this.file.size,
       mimeType: this.file.type || 'video/mp4',
+      delivery: this.delivery,
     })
   }
 

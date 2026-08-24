@@ -129,9 +129,28 @@ export function UsersIcon(props) {
 
 export function LockIcon(props) {
   return (
-    <Svg fill="none" stroke="currentColor" strokeWidth="2.5" {...props}>
+    <Svg {...strokeProps} {...props}>
       <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
       <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </Svg>
+  )
+}
+
+export function UnlockIcon(props) {
+  return (
+    <Svg {...strokeProps} {...props}>
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+    </Svg>
+  )
+}
+
+export function GlobeIcon(props) {
+  return (
+    <Svg {...strokeProps} {...props}>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
     </Svg>
   )
 }
@@ -152,6 +171,25 @@ export function LogInIcon(props) {
       <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
       <polyline points="10 17 15 12 10 7" />
       <line x1="15" y1="12" x2="3" y2="12" />
+    </Svg>
+  )
+}
+
+export function DownloadIcon(props) {
+  return (
+    <Svg {...strokeProps} {...props}>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="7 10 12 15 17 10" />
+      <line x1="12" y1="15" x2="12" y2="3" />
+    </Svg>
+  )
+}
+
+export function LinkIcon(props) {
+  return (
+    <Svg {...strokeProps} {...props}>
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
     </Svg>
   )
 }

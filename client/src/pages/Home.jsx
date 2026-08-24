@@ -4,16 +4,18 @@
  * Three-step flow driven by the local `mode` state:
  *   null   → choose "Host a Room" or "Join a Room"
  *   'host' → your-name + room-name form; a random 6-char code is generated
- *            client-side (see Known Gaps)
- *   'join' → your-name + 6-char code entry form
+ *            client-side (see Known Gaps); optional Public visibility
+ *   'join' → your-name + 6-char code entry form, plus a live list of public
+ *            rooms fetched via listRooms() (private rooms are never listed)
  *
- * Submitting either form calls `onEnterRoom({ displayName, name, code, role })`;
- * App.jsx performs the actual socket round-trip (room:create / room:join) and
- * swaps to the Room page on success. Connection errors surface via the `error`
- * prop and are rendered under the active form.
+ * Submitting either form calls `onEnterRoom({ displayName, name, code,
+ * role, isPublic })`; App.jsx performs the actual socket round-trip
+ * (room:create / room:join) and swaps to the Room page on success.
+ * Connection errors surface via the `error` prop and are rendered under
+ * the active form.
  */
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { LogoMark, PlayIcon, UsersIcon, ArrowLeftIcon, LogInIcon } from '../components/Icons.jsx'
 import './Home.css'
 
@@ -24,20 +26,35 @@ const generateCode = () => Math.random().toString(36).substring(2, 8).toUpperCas
 
 /**
  * @param {object} props
- * @param {(info: { displayName: string, name: string, code: string, role: 'host'|'member' }) => void} props.onEnterRoom
+ * @param {(info: { displayName: string, name: string, code: string, role: 'host'|'member', isPublic?: boolean }) => void} props.onEnterRoom
  * @param {string | null} props.error     last connection/room error to display
  * @param {boolean} props.connecting      true while create/join is in flight
+ * @param {() => Promise<{ ok: boolean, rooms?: Array<{ code: string, name: string, hostName: string, memberCount: number }> }>} [props.listRooms]
  */
-export default function Home({ onEnterRoom, error, connecting }) {
+export default function Home({ onEnterRoom, error, connecting, listRooms }) {
   const [mode, setMode] = useState(null) // null | 'host' | 'join'
   const [yourName, setYourName] = useState('')
   const [roomName, setRoomName] = useState('')
   const [roomCode, setRoomCode] = useState('')
+  const [isPublic, setIsPublic] = useState(false)
+  const [publicRooms, setPublicRooms] = useState([])
+
+  // Refresh the discovery list every time the join form opens.
+  useEffect(() => {
+    if (mode !== 'join') return undefined
+    let cancelled = false
+    listRooms?.().then((res) => {
+      if (!cancelled && res?.ok) setPublicRooms(res.rooms || [])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [mode, listRooms])
 
   const handleHost = () => {
     if (!yourName.trim() || !roomName.trim()) return
     const code = generateCode()
-    onEnterRoom({ displayName: yourName.trim(), name: roomName.trim(), code, role: 'host' })
+    onEnterRoom({ displayName: yourName.trim(), name: roomName.trim(), code, role: 'host', isPublic })
   }
 
   const handleJoin = () => {
@@ -149,6 +166,19 @@ export default function Home({ onEnterRoom, error, connecting }) {
               />
             </div>
 
+            <label className="home__checkbox-row" htmlFor="input-room-public">
+              <input
+                id="input-room-public"
+                type="checkbox"
+                checked={isPublic}
+                onChange={(e) => setIsPublic(e.target.checked)}
+              />
+              <span>
+                Public room
+                <small> — listed in the room browser (anyone can join)</small>
+              </span>
+            </label>
+
             <button
               className="home__btn home__btn--primary"
               id="btn-create-room"
@@ -205,6 +235,26 @@ export default function Home({ onEnterRoom, error, connecting }) {
                 autoComplete="off"
               />
             </div>
+
+            {publicRooms.length > 0 && (
+              <div className="home__public-rooms" id="public-rooms-list">
+                <span className="home__label">Public Rooms</span>
+                {publicRooms.map((room) => (
+                  <button
+                    key={room.code}
+                    id={`btn-public-room-${room.code}`}
+                    className="home__public-room"
+                    onClick={() => setRoomCode(room.code)}
+                    title="Click to fill the room code"
+                  >
+                    <span className="home__public-room-name">{room.name}</span>
+                    <span className="home__public-room-meta">
+                      {room.hostName} · {room.memberCount} online · {room.code}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
 
             <button
               className="home__btn home__btn--secondary"
