@@ -7,6 +7,7 @@ import {
   VolumeOffIcon,
   MaximizeIcon,
   MinimizeIcon,
+  RotateIcon,
 } from './Icons.jsx'
 import { formatTime } from '../lib/formatTime.js'
 
@@ -33,6 +34,11 @@ import { formatTime } from '../lib/formatTime.js'
  * @param {string} props.videoName              shown as "now playing", if any
  * @param {boolean} [props.isFullscreen]        toggles the fullscreen icon
  * @param {() => void} [props.onToggleFullscreen]
+ * @param {boolean} [props.isOrientationLocked] true while landscape orientation
+ *                                              is locked (lights the button)
+ * @param {() => void} [props.onToggleOrientation]
+ *                                              fullscreen + landscape lock toggle
+ *                                              (touch devices only; omit to hide)
  * @param {boolean} [props.disabled]            gray out transport + seek when the
  *                                              active source can't be synced
  */
@@ -52,6 +58,8 @@ export default function PlayerControls({
   videoName,
   isFullscreen = false,
   onToggleFullscreen,
+  isOrientationLocked = false,
+  onToggleOrientation,
   disabled = false,
 }) {
   return (
@@ -134,6 +142,16 @@ export default function PlayerControls({
             <span className="room__now-playing-label" title={videoName}>
               {videoName.length > 30 ? videoName.slice(0, 30) + '…' : videoName}
             </span>
+          )}
+          {onToggleOrientation && (
+            <button
+              className={`room__ctrl-btn room__orientation-btn ${isOrientationLocked ? 'room__ctrl-btn--active' : ''}`}
+              id="btn-toggle-orientation"
+              onClick={onToggleOrientation}
+              title={isOrientationLocked ? 'Back to portrait' : 'Rotate to landscape'}
+            >
+              <RotateIcon size={18} />
+            </button>
           )}
           <button
             className="room__ctrl-btn"

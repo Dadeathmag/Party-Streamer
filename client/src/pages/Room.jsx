@@ -142,6 +142,7 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
   const [mediaReady, setMediaReady] = useState(false)
   const [showMembers, setShowMembers] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [isLandscapeLocked, setIsLandscapeLocked] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [urlDraft, setUrlDraft] = useState('')
   const [urlInputOpen, setUrlInputOpen] = useState(false)
@@ -755,9 +756,37 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
     }
   }
 
-  // Native exits (Esc / F11) must stay in sync with our icon state.
+  // Landscape lock (touch devices): browsers only honor screen.orientation.lock
+  // inside fullscreen, so the button first takes the document fullscreen and
+  // then locks landscape. Pressing again releases both. Unsupported platforms
+  // reject the lock — the catch leaves plain fullscreen and an unlit button.
+  const toggleOrientation = async () => {
+    if (isLandscapeLocked) {
+      try { screen.orientation?.unlock?.() } catch { /* already released */ }
+      setIsLandscapeLocked(false)
+      if (document.fullscreenElement) document.exitFullscreen()
+      return
+    }
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen()
+      }
+      if (!screen.orientation?.lock) return // e.g. iOS: rotation follows the device
+      await screen.orientation.lock('landscape')
+      setIsLandscapeLocked(true)
+    } catch {
+      setIsLandscapeLocked(false)
+    }
+  }
+
+  // Native exits (Esc / F11) must stay in sync with our icon state; leaving
+  // fullscreen also implicitly drops any orientation lock.
   useEffect(() => {
-    const onFsChange = () => setIsFullscreen(Boolean(document.fullscreenElement))
+    const onFsChange = () => {
+      const fs = Boolean(document.fullscreenElement)
+      setIsFullscreen(fs)
+      if (!fs) setIsLandscapeLocked(false)
+    }
     document.addEventListener('fullscreenchange', onFsChange)
     return () => document.removeEventListener('fullscreenchange', onFsChange)
   }, [])
@@ -972,6 +1001,8 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
             videoName={displayName}
             isFullscreen={isFullscreen}
             onToggleFullscreen={toggleFullscreen}
+            isOrientationLocked={isLandscapeLocked}
+            onToggleOrientation={toggleOrientation}
             disabled={!syncEnabled}
           />
         </div>

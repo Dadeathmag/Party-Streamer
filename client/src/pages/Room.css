@@ -2,13 +2,15 @@
    Room Page — Dark & Bold
    ═══════════════════════════════════════════════ */
 
-/* ── Layout ── */
+/* ── Layout ──
+   min-height (not fixed height) so short viewports scroll the page instead of
+   crushing the stage; overflow-x stays clipped for the hanging chat handle. */
 .room {
-  height: 100dvh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   background: var(--bg-base);
-  overflow: hidden;
+  overflow-x: hidden;
 }
 
 /* ── Top Bar ── */
@@ -207,11 +209,12 @@ button.room__vis-toggle--locked:hover {
   display: inline;
 }
 
-/* ── Main Area ── */
+/* ── Main Area ──
+   No min-height:0 here — children keep their floors and grow the page when
+   the viewport can't fit them (the page scrolls, nothing gets crushed). */
 .room__main {
   flex: 1;
   display: flex;
-  min-height: 0;
   transition: all 0.3s var(--ease-out);
 }
 
@@ -221,6 +224,7 @@ button.room__vis-toggle--locked:hover {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 280px;
 }
 
 .room__video-container {
@@ -621,6 +625,23 @@ button.room__vis-toggle--locked:hover {
   background: var(--bg-hover);
 }
 
+.room__ctrl-btn--active {
+  color: var(--accent-bright);
+}
+
+/* Orientation lock is a touch-device feature (browsers only honor it in
+   fullscreen on mobile); hide the button where a mouse + desktop browser
+   would find it permanently rejected. */
+.room__orientation-btn {
+  display: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .room__orientation-btn {
+    display: flex;
+  }
+}
+
 /* Volume Slider */
 .room__volume-group {
   display: flex;
@@ -738,6 +759,7 @@ button.room__vis-toggle--locked:hover {
 /* Chat Messages */
 .room__chat-messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 12px 16px;
   display: flex;
@@ -960,6 +982,7 @@ button.room__vis-toggle--locked:hover {
   .room__chat {
     width: 100%;
     height: 40%;
+    min-height: 240px;
     border-left: none;
     border-top: 1px solid var(--border);
   }
@@ -967,6 +990,7 @@ button.room__vis-toggle--locked:hover {
   .room__chat--collapsed {
     width: 0;
     height: auto;
+    min-height: 0;
   }
 
   .room__chat-toggle {
