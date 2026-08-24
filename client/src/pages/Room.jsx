@@ -26,14 +26,20 @@
  *           network/fileSender.js + fileReceiver.js)
  *   'full'  same P2P transfer, but guests only get playback after the whole
  *           file has arrived (delivery:'full' on FILE_OFFER)
- *   'url'   host pastes a direct media URL that every client loads itself;
- *           no P2P transfer at all
+ *   'url'   host pastes a share-link that every client loads itself; no P2P
+ *           transfer at all. lib/linkEmbed.js classifies the link — direct
+ *           files (and rewritten Google Drive links) play through the synced
+ *           native <video>; YouTube/Vimeo/Dailymotion/Twitch render in an
+ *           iframe driven by lib/embedSurface.js behind the SAME playback
+ *           surface interface, so the sync protocol below is unchanged.
+ *           Twitch LIVE channels expose no seek/duration → transport is
+ *           disabled and watch-together sync is off for them.
  * The mode is stored server-side and broadcast via 'stream:mode-changed'
  * (see useSocket), so late joiners sync up through their join ack. All P2P
  * networking flows through props provided by usePeerNetwork (App.jsx).
  */
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { ArrowLeftIcon, UploadIcon, DownloadIcon, LinkIcon, GlobeIcon, LockIcon, UnlockIcon, UsersIcon, MaximizeIcon, MinimizeIcon } from '../components/Icons.jsx'
 import VideoStage from '../components/VideoStage.jsx'
 import PlayerControls from '../components/PlayerControls.jsx'
@@ -44,6 +50,8 @@ import {
   DRIFT_SEEK_THRESHOLD_S,
   RATE_NUDGE_LIMIT,
 } from '../network/roomProtocol.js'
+import { LINK_KINDS, parseLink } from '../lib/linkEmbed.js'
+import { createEmbedSurface } from '../lib/embedSurface.js'
 import './Room.css'
 
 const SAMPLE_MESSAGES = [
@@ -133,6 +141,7 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [urlDraft, setUrlDraft] = useState('')
   const [urlInputOpen, setUrlInputOpen] = useState(false)
+  const [embedError, setEmbedError] = useState(null)
 
   // ── Refs ──────────────────────────────────────────────────────────────────
   const videoRef = useRef(null)
@@ -141,6 +150,19 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
   const progressRef = useRef(null)
   const nextMsgIdRef = useRef(1)
   const lastFileRef = useRef(null)
+  // Provider-embed plumbing (link mode): mount point + active controller.
+  const embedContainerRef = useRef(null)
+  const embedSurfaceRef = useRef(null)
+  /** Last play-state we broadcast for the current embed (echo dedup). */
+  const lastEmbedPlayStateRef = useRef(false)
+  /** Drive-hack caveat shown once per link. */
+  const warnedDriveUrlRef = useRef(null)
+  // Latest-value mirrors so the async embed creation can apply the current
+  // audio state without re-mounting the player when volume changes later.
+  const volumeRef = useRef(volume)
+  const isMutedRef = useRef(isMuted)
+  useEffect(() => { volumeRef.current = volume }, [volume])
+  useEffect(() => { isMutedRef.current = isMuted }, [isMuted])
 
   // ── Effects ───────────────────────────────────────────────────────────────
 
@@ -203,6 +225,141 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
     })
   }, [onKicked, onLeave])
 
+  // ── Playback surface (native <video> ⇄ provider embed) ──────────────────
+  // Every sync path below talks to ONE interface. In link mode the embed
+  // controller (lib/embedSurface.js) takes over; otherwise the native
+  // element answers. Both are read through refs, so this never goes stale.
+
+  const getNativeSurface = () => {
+    const v = videoRef.current
+    if (!v) return null
+    return {
+      play: () => v.play().catch(() => {}),
+      pause: () => v.pause(),
+      seek: (t) => { try { v.currentTime = t } catch { /* not seekable yet */ } },
+      getTime: () => (Number.isFinite(v.currentTime) ? v.currentTime : 0),
+      getDuration: () => (Number.isFinite(v.duration) ? v.duration : 0),
+      isPaused: () => v.paused,
+      setVolume: (val) => { v.volume = val },
+      setMuted: (m) => { v.muted = m },
+      setRate: (r) => { v.playbackRate = r },
+    }
+  }
+
+  const getSurface = useCallback(
+    () => embedSurfaceRef.current ?? getNativeSurface(),
+    [],
+  )
+
+  // ── Link mode classification (pure; identical on every client) ───────────
+
+  const urlMode = activeStreamType === 'url'
+  const sharedUrl = streamMode?.url ?? null
+  const parsedLink = useMemo(() => {
+    if (!urlMode || !sharedUrl) return null
+    return parseLink(sharedUrl)
+  }, [urlMode, sharedUrl])
+  /** Non-null when the link needs an iframe player instead of <video>. */
+  const embedLink = parsedLink && parsedLink.kind !== LINK_KINDS.DIRECT ? parsedLink : null
+  const syncEnabled = !embedLink || embedLink.syncCapable
+
+  // Reset transient playback state whenever the media source identity
+  // changes (new link, link removed, room entered mid-stream). Done as a
+  // render-time derivation — the documented React pattern for "reset state
+  // when a prop changes" — so stale time/duration from the previous source
+  // never paints.
+  const sourceKey = embedLink ? `${embedLink.kind}:${embedLink.embedUrl}` : null
+  const [seenSourceKey, setSeenSourceKey] = useState(null)
+  if (sourceKey !== seenSourceKey) {
+    setSeenSourceKey(sourceKey)
+    setIsPlaying(false)
+    setCurrentTime(0)
+    setDuration(0)
+    setMediaReady(false)
+    setEmbedError(null)
+  }
+
+  // Surface the Drive-hack caveat exactly once per link (host + guests).
+  useEffect(() => {
+    if (!parsedLink?.driveHack || !sharedUrl) return
+    if (warnedDriveUrlRef.current === sharedUrl) return
+    warnedDriveUrlRef.current = sharedUrl
+    addSystemMessage(
+      'Google Drive link converted to direct playback — private or very large files may fail to load.',
+    )
+  }, [parsedLink, sharedUrl])
+
+  // Provider-initiated play-state changes (user clicked inside the iframe).
+  // Kept behind a latest-ref so the embed never needs remounting when host
+  // state or callbacks change identity. Hosts re-broadcast the transition
+  // (echo-deduped against commands we issued ourselves); guests only mirror
+  // it locally — their controls are never broadcast.
+  const embedPlayStateRef = useRef(null)
+  useEffect(() => {
+    embedPlayStateRef.current = (playing) => {
+      setIsPlaying(playing)
+      if (!isHost || !syncEnabled) return
+      if (playing === lastEmbedPlayStateRef.current) return
+      lastEmbedPlayStateRef.current = playing
+      broadcastPlayback?.(playing ? 'play' : 'pause', getSurface()?.getTime() ?? 0)
+    }
+  }, [isHost, syncEnabled, broadcastPlayback, getSurface])
+
+  // Mount/unmount the provider-embed controller for non-direct links.
+  // StrictMode-safe: async creation adopts the surface only if this mount is
+  // still live; otherwise it destroys it immediately.
+  useEffect(() => {
+    embedSurfaceRef.current = null
+    lastEmbedPlayStateRef.current = false
+    if (!embedLink) return undefined
+
+    let disposed = false
+    createEmbedSurface(embedContainerRef.current, embedLink, {
+      onTimeUpdate: (t, d) => {
+        if (disposed) return
+        setCurrentTime(t)
+        if (d > 0) setDuration(d)
+      },
+      onMeta: ({ duration }) => {
+        if (disposed) return
+        setDuration(duration)
+        setMediaReady(true)
+      },
+      onPlayState: (playing) => embedPlayStateRef.current?.(playing),
+      onEnded: () => { if (!disposed) setIsPlaying(false) },
+      onError: (message) => {
+        if (disposed) return
+        setEmbedError(message)
+        addSystemMessage(`Link playback problem: ${message}`)
+      },
+    })
+      .then((surface) => {
+        if (disposed) {
+          surface.destroy()
+          return
+        }
+        embedSurfaceRef.current = surface
+        surface.setVolume(volumeRef.current)
+        surface.setMuted(isMutedRef.current)
+        // The first poll tick may already have cached metadata.
+        const d = surface.getDuration()
+        if (d > 0) {
+          setDuration(d)
+          setMediaReady(true)
+        }
+      })
+      .catch((err) => {
+        if (disposed) return
+        setEmbedError(err?.message || 'Could not load the embedded player.')
+      })
+
+    return () => {
+      disposed = true
+      embedSurfaceRef.current?.destroy()
+      embedSurfaceRef.current = null
+    }
+  }, [embedLink])
+
   // ── Host sync application (guests, both transports) ──────────────────────
 
   // One applier fed by the DataChannel path (primary) and the Socket.IO
@@ -211,8 +368,9 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
   const lastAppliedSeqRef = useRef(-1)
 
   const applyHostSync = useCallback((msg) => {
-    const video = videoRef.current
-    if (!video || !msg) return
+    if (!msg) return
+    const surface = getSurface()
+    if (!surface) return
 
     if (typeof msg.seq === 'number') {
       if (msg.seq <= lastAppliedSeqRef.current) return
@@ -221,54 +379,55 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
 
     if (msg.kind === 'beacon') {
       // Reconcile desired state first — a late joiner may still be paused.
-      if (msg.playing && video.paused) {
-        video.play().catch(() => {})
+      if (msg.playing && surface.isPaused()) {
+        surface.play()
         setIsPlaying(true)
-      } else if (!msg.playing && !video.paused) {
-        video.pause()
-        video.playbackRate = 1
+      } else if (!msg.playing && !surface.isPaused()) {
+        surface.pause()
+        surface.setRate(1)
         setIsPlaying(false)
         return
       }
       if (!msg.playing) return
 
       // Drift correction while playing: snap hard past the seek threshold,
-      // otherwise nudge playbackRate toward the host clock and relax to 1x
-      // once close enough.
-      const drift = msg.time - video.currentTime
+      // otherwise nudge playback rate toward the host clock and relax to 1x
+      // once close enough. Providers without rate control no-op the nudge,
+      // leaving snap-seek as their correction mechanism.
+      const drift = msg.time - surface.getTime()
       const absDrift = Math.abs(drift)
       if (absDrift > DRIFT_SEEK_THRESHOLD_S) {
-        video.currentTime = msg.time
-        video.playbackRate = 1
+        surface.seek(msg.time)
+        surface.setRate(1)
       } else if (absDrift > DRIFT_NUDGE_THRESHOLD_S) {
-        video.playbackRate = Math.min(
+        surface.setRate(Math.min(
           1 + RATE_NUDGE_LIMIT,
           Math.max(1 - RATE_NUDGE_LIMIT, 1 + drift * 0.1),
-        )
+        ))
       } else {
-        video.playbackRate = 1
+        surface.setRate(1)
       }
       return
     }
 
     switch (msg.action) {
       case 'play':
-        video.currentTime = msg.time
-        video.play().catch(() => {})
-        video.playbackRate = 1
+        surface.seek(msg.time)
+        surface.play()
+        surface.setRate(1)
         setIsPlaying(true)
         break
       case 'pause':
-        video.pause()
-        video.currentTime = msg.time
-        video.playbackRate = 1
+        surface.pause()
+        surface.seek(msg.time)
+        surface.setRate(1)
         setIsPlaying(false)
         break
       case 'seek':
-        video.currentTime = msg.time
+        surface.seek(msg.time)
         break
     }
-  }, [])
+  }, [getSurface])
 
   // DataChannel path: pre-normalized by usePeerNetwork.
   useEffect(() => {
@@ -291,17 +450,18 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
 
   // Host: periodic state beacons over the viewer DataChannels so drifting
   // viewers soft-correct and late joiners pick up current playback within
-  // one interval instead of waiting for the next interaction.
+  // one interval instead of waiting for the next interaction. Sync-capable
+  // links beacon from the embed surface; live channels skip beacons entirely.
   useEffect(() => {
-    if (!isHost || !isPlaying || !mediaReady || !broadcastBeacon) return
+    if (!isHost || !isPlaying || !mediaReady || !syncEnabled || !broadcastBeacon) return
     const fire = () => {
-      const v = videoRef.current
-      if (v && Number.isFinite(v.currentTime)) broadcastBeacon(v.currentTime)
+      const t = getSurface()?.getTime()
+      if (Number.isFinite(t)) broadcastBeacon(t)
     }
     fire()
     const timer = setInterval(fire, BEACON_INTERVAL_MS)
     return () => clearInterval(timer)
-  }, [isHost, isPlaying, mediaReady, broadcastBeacon])
+  }, [isHost, isPlaying, mediaReady, syncEnabled, broadcastBeacon, getSurface])
 
   // Guests: a streamed video from the host became playable (or finished
   // assembling). url === null means MSE is already wired to our <video>.
@@ -360,32 +520,43 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
   }, [myId, onChatMessage])
 
   // ── Playback handlers (broadcast when host, local-only otherwise) ────────
+  // All commands go through the unified playback surface — the native
+  // <video> in file/direct-link modes, or the provider embed controller in
+  // embed-link modes. Hosts broadcast; guests apply locally only.
 
   const togglePlay = () => {
-    if (!videoRef.current) return
-    if (isPlaying) {
-      videoRef.current.pause()
-      if (isHost) broadcastPlayback?.('pause', videoRef.current.currentTime)
-    } else {
-      videoRef.current.play()
-      if (isHost) broadcastPlayback?.('play', videoRef.current.currentTime)
+    const surface = getSurface()
+    if (!surface) return
+    const next = !isPlaying
+    if (next) surface.play()
+    else surface.pause()
+    if (isHost && syncEnabled) {
+      if (embedLink) {
+        // The provider will echo this state back via onPlayState; mark it
+        // as already-broadcast so the echo doesn't send a duplicate.
+        lastEmbedPlayStateRef.current = next
+      }
+      broadcastPlayback?.(next ? 'play' : 'pause', surface.getTime())
     }
-    setIsPlaying(!isPlaying)
+    setIsPlaying(next)
   }
 
   const handleSeek = (e) => {
-    if (!videoRef.current || !progressRef.current) return
+    const surface = getSurface()
+    if (!surface || !progressRef.current) return
     const rect = progressRef.current.getBoundingClientRect()
-    const pct = (e.clientX - rect.left) / rect.width
-    const newTime = pct * duration
-    videoRef.current.currentTime = newTime
-    if (isHost) broadcastPlayback?.('seek', newTime)
+    const clickPct = (e.clientX - rect.left) / rect.width
+    const newTime = Math.min(Math.max(clickPct * duration, 0), duration || Infinity)
+    surface.seek(newTime)
+    if (isHost && syncEnabled) broadcastPlayback?.('seek', newTime)
   }
 
   const skip = (seconds) => {
-    if (!videoRef.current) return
-    videoRef.current.currentTime += seconds
-    if (isHost) broadcastPlayback?.('seek', videoRef.current.currentTime)
+    const surface = getSurface()
+    if (!surface) return
+    const target = surface.getTime() + seconds
+    surface.seek(target)
+    if (isHost && syncEnabled) broadcastPlayback?.('seek', target)
   }
 
   // ── Volume handlers (always local — never synced) ─────────────────────────
@@ -393,15 +564,14 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
   const handleVolume = (e) => {
     const val = parseFloat(e.target.value)
     setVolume(val)
-    if (videoRef.current) videoRef.current.volume = val
+    getSurface()?.setVolume(val)
     setIsMuted(val === 0)
   }
 
   const toggleMute = () => {
-    if (!videoRef.current) return
     const next = !isMuted
     setIsMuted(next)
-    videoRef.current.muted = next
+    getSurface()?.setMuted(next)
   }
 
   // ── Media selection (host only) ───────────────────────────────────────────
@@ -674,7 +844,7 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
                   id="input-stream-url"
                   className="room__url-input"
                   type="text"
-                  placeholder="https://example.com/video.mp4"
+                  placeholder="Paste a video link — YouTube, Drive, Vimeo, Twitch, direct MP4…"
                   value={urlDraft}
                   onChange={(e) => setUrlDraft(e.target.value)}
                   autoFocus
@@ -699,10 +869,13 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
         <div className="room__video-panel">
           <VideoStage
             videoRef={videoRef}
-            videoSrc={displaySrc}
+            videoSrc={embedLink ? null : displaySrc}
             videoName={displayName}
             mediaReady={mediaReady}
             incomingLabel={incomingLabel}
+            embedUrl={embedLink?.embedUrl || null}
+            embedContainerRef={embedContainerRef}
+            embedError={embedError}
             isHost={isHost}
             showMembers={showMembers}
             members={members}
@@ -731,6 +904,7 @@ function Room({ roomInfo, onLeave, members = [], myId, onPlaybackSync, sendChat,
             currentTime={currentTime}
             duration={duration}
             videoName={displayName}
+            disabled={!syncEnabled}
           />
         </div>
 

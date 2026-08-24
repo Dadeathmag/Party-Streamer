@@ -29,6 +29,8 @@ import { formatTime } from '../lib/formatTime.js'
  * @param {number} props.currentTime            seconds
  * @param {number} props.duration               seconds; 0 until metadata loads
  * @param {string} props.videoName              shown as "now playing", if any
+ * @param {boolean} [props.disabled]            gray out transport + seek when the
+ *                                              active source can't be synced
  */
 export default function PlayerControls({
   progressRef,
@@ -44,11 +46,17 @@ export default function PlayerControls({
   currentTime,
   duration,
   videoName,
+  disabled = false,
 }) {
   return (
-    <div className="room__controls">
+    <div className={`room__controls ${disabled ? 'room__controls--disabled' : ''}`}>
       {/* Progress Bar */}
-      <div className="room__progress" ref={progressRef} onClick={onSeek} id="progress-bar">
+      <div
+        className="room__progress"
+        ref={progressRef}
+        onClick={disabled ? undefined : onSeek}
+        id="progress-bar"
+      >
         <div className="room__progress-fill" style={{ width: `${pct}%` }} />
         <div className="room__progress-thumb" style={{ left: `${pct}%` }} />
       </div>
@@ -58,7 +66,8 @@ export default function PlayerControls({
           <button
             className="room__ctrl-btn"
             id="btn-play-pause"
-            onClick={onTogglePlay}
+            onClick={disabled ? undefined : onTogglePlay}
+            disabled={disabled}
             title={isPlaying ? 'Pause' : 'Play'}
           >
             {isPlaying ? (
@@ -72,6 +81,7 @@ export default function PlayerControls({
             className="room__ctrl-btn"
             id="btn-skip-back"
             onClick={() => onSkip(-10)}
+            disabled={disabled}
             title="Back 10s"
           >
             <SkipBackIcon size={18} />
@@ -81,6 +91,7 @@ export default function PlayerControls({
             className="room__ctrl-btn"
             id="btn-skip-fwd"
             onClick={() => onSkip(10)}
+            disabled={disabled}
             title="Forward 10s"
           >
             <SkipForwardIcon size={18} />

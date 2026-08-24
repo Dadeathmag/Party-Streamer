@@ -267,6 +267,55 @@ button.room__vis-toggle--locked:hover {
   border-top: 1px solid var(--border);
 }
 
+/* Provider-embed layer (YouTube/Vimeo/Dailymotion/Twitch link mode).
+   The native <video> stays mounted underneath (the P2P/MSE layer keeps its
+   handle) but is visually hidden while an embed owns the stage. */
+.room__video--hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.room__embed-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+.room__embed-frame {
+  width: 100%;
+  height: 100%;
+}
+
+.room__embed-frame iframe,
+.room__embed-iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.room__embed-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  animation: fadeIn 0.3s var(--ease-out) both;
+}
+
+.room__embed-loading--error {
+  color: #f87171;
+  padding: 0 24px;
+  text-align: center;
+}
+
 /* ── Streaming Mode Bar ── */
 .room__mode-bar {
   display: flex;
