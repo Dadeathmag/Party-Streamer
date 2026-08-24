@@ -77,11 +77,15 @@ function ensureConnected(socket, timeoutMs = CONNECT_TIMEOUT_MS) {
  *   connected  — boolean, true when socket is connected
  *   myId       — string | null, this client's current socket id
  *   members    — array of { socketId, displayName, role }
+ *   streamMode — { type: 'p2p'|'full'|'url', url: string|null } | null,
+ *                the room's current streaming mode (host-controlled; see
+ *                server streamHandlers.js)
  *   error      — string | null, last error message
  *   connecting — boolean, true while a create/join is in-flight
  *   createRoom(name, code, displayName) → Promise<response>
  *   joinRoom(code, displayName)         → Promise<response>
  *   leaveRoom()
+ *   sendStreamMode(type, url) → Promise<{ ok, mode?, error? }>  (host only)
  *   sendPlaybackSync(action, time)
  *   onPlaybackSync(callback) — register a listener for incoming sync events
  *   sendChat(text)
@@ -92,6 +96,9 @@ function ensureConnected(socket, timeoutMs = CONNECT_TIMEOUT_MS) {
  *   onMemberLeft(callback)   — register a listener for other members leaving
  *                              (receives their displayName)
  *   onHostLeft(callback)     — register a listener for host-left events
+ *   onStreamModeChanged(cb)  — register a listener for live streaming-mode
+ *                              changes ({ type, url }); initial state comes
+ *                              via the streamMode value instead
  *   sendSignal(to, kind, payload) — relay WebRTC signaling to a peer
  *   onSignal(callback)       — incoming signaling: { from, kind, payload }
  */
@@ -100,6 +107,7 @@ export default function useSocket() {
   const [connected, setConnected] = useState(false)
   const [myId, setMyId] = useState(null)
   const [members, setMembers] = useState([])
+  const [streamMode, setStreamMode] = useState(null)
   const [error, setError] = useState(null)
   const [connecting, setConnecting] = useState(false)
 
@@ -110,6 +118,7 @@ export default function useSocket() {
   const memberLeftCbRef = useRef(null)
   const hostLeftCbRef = useRef(null)
   const signalCbRef = useRef(null)
+  const streamModeChangedCbRef = useRef(null)
 
   // ── Initialise socket once on mount ──────────────────────────────────────
   useEffect(() => {
@@ -155,12 +164,20 @@ export default function useSocket() {
 
     socket.on('room:host-left', () => {
       setMembers([])
+      setStreamMode(null)
       hostLeftCbRef.current?.()
     })
 
     // ── Playback sync (incoming, for non-hosts) ──────────────────────────
     socket.on('playback:sync', (data) => {
       playbackSyncCbRef.current?.(data)
+    })
+
+    // ── Streaming mode (host-controlled, echoed to the host too) ─────────
+    socket.on('stream:mode-changed', ({ type, url }) => {
+      const mode = { type, url: url ?? null }
+      setStreamMode(mode)
+      streamModeChangedCbRef.current?.(mode)
     })
 
     // ── Chat (incoming, includes the sender's own echo) ──────────────────
@@ -202,6 +219,7 @@ export default function useSocket() {
     setConnecting(false)
     if (res.ok) {
       setMembers(res.members)
+      setStreamMode(res.streamMode ?? null)
       setError(null)
     } else {
       setError(res.error)
@@ -230,6 +248,7 @@ export default function useSocket() {
     setConnecting(false)
     if (res.ok) {
       setMembers(res.members)
+      setStreamMode(res.streamMode ?? null)
       setError(null)
     } else {
       setError(res.error)
@@ -243,7 +262,19 @@ export default function useSocket() {
     if (!socket?.connected) return
     socket.emit('room:leave')
     setMembers([])
+    setStreamMode(null)
     setError(null)
+  }, [])
+
+  // ── Streaming mode (outgoing, for host) ─────────────────────────────────
+  const sendStreamMode = useCallback(async (type, url = null) => {
+    const socket = socketRef.current
+    if (!(await ensureConnected(socket))) {
+      return { ok: false, error: 'Not connected to the server.' }
+    }
+    return new Promise((resolve) => {
+      socket.emit('stream:set-mode', { type, url }, resolve)
+    })
   }, [])
 
   // ── Playback Sync (outgoing, for host) ──────────────────────────────────
@@ -290,6 +321,10 @@ export default function useSocket() {
     hostLeftCbRef.current = cb
   }, [])
 
+  const onStreamModeChanged = useCallback((cb) => {
+    streamModeChangedCbRef.current = cb
+  }, [])
+
   const onSignal = useCallback((cb) => {
     signalCbRef.current = cb
   }, [])
@@ -298,11 +333,13 @@ export default function useSocket() {
     connected,
     myId,
     members,
+    streamMode,
     error,
     connecting,
     createRoom,
     joinRoom,
     leaveRoom,
+    sendStreamMode,
     sendPlaybackSync,
     onPlaybackSync,
     sendChat,
@@ -310,6 +347,7 @@ export default function useSocket() {
     onMemberJoined,
     onMemberLeft,
     onHostLeft,
+    onStreamModeChanged,
     sendSignal,
     onSignal,
   }

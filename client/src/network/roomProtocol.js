@@ -8,11 +8,21 @@
  *                       belonging to the most recently offered transfer.
  *
  * Wire format (host ⇄ guest):
- *   host → guest  FILE_OFFER    { name, size, mimeType }
+ *   host → guest  FILE_OFFER    { name, size, mimeType, delivery }
  *   guest → host  FILE_ACCEPT   {}
  *   host → guest  (ArrayBuffer chunks, sequential)
  *   host → guest  FILE_COMPLETE {}
  *   either side   FILE_ABORT    { reason }
+ *
+ * `delivery` on FILE_OFFER tells the guest how to play what arrives:
+ *   - 'progressive' — try MSE first so playback can start mid-transfer
+ *   - 'full'        — buffer everything and only assemble a Blob at
+ *                     FILE_COMPLETE (host's "full transfer" streaming mode)
+ *
+ * The room-wide streaming mode itself is announced out-of-band over the
+ * signaling transport ('stream:mode-changed', see useSocket); it is not a
+ * DataChannel message because it must reach peers whose channels do not
+ * exist yet.
  */
 
 /** @enum {string} */
@@ -21,6 +31,12 @@ export const MSG = {
   FILE_ACCEPT: 'FILE_ACCEPT',
   FILE_COMPLETE: 'FILE_COMPLETE',
   FILE_ABORT: 'FILE_ABORT',
+}
+
+/** @enum {string} How an offered file should be delivered/played. */
+export const DELIVERY = {
+  PROGRESSIVE: 'progressive',
+  FULL: 'full',
 }
 
 /**

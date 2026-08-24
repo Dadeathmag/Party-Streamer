@@ -19,6 +19,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import Peer, { PEER_STATE } from '../network/peer.js'
 import FileSender from '../network/fileSender.js'
 import FileReceiver from '../network/fileReceiver.js'
+import { DELIVERY } from '../network/roomProtocol.js'
 import {
   decodeMessage,
   encodeMessage,
@@ -55,6 +56,8 @@ export default function usePeerNetwork(socketApi) {
   const receiverRef = useRef(null)
   /** @type {React.MutableRefObject<File|null>} */
   const currentFileRef = useRef(null)
+  /** @type {React.MutableRefObject<string>} delivery for the current file */
+  const currentDeliveryRef = useRef(DELIVERY.PROGRESSIVE)
   /** @type {React.MutableRefObject<HTMLVideoElement|null>} */
   const videoElRef = useRef(null)
 
@@ -95,11 +98,12 @@ export default function usePeerNetwork(socketApi) {
   // ── Sender management (host) ──────────────────────────────────────────────
 
   const startSenderTo = useCallback(
-    (peer, file) => {
+    (peer, file, delivery = DELIVERY.PROGRESSIVE) => {
       if (sendersRef.current.has(peer.peerId) || !peer.isOpen) return
       const sender = new FileSender({
         peer,
         file,
+        delivery,
         onProgress: recalcSendStatus,
         onComplete: () => {
           sendersRef.current.delete(peer.peerId)
@@ -120,19 +124,33 @@ export default function usePeerNetwork(socketApi) {
   /**
    * Host: stream the newly selected file to everyone connected now; peers
    * connecting later are handled by the DataChannel-open handler below.
+   * `delivery` is 'progressive' (default) or 'full' — see roomProtocol.
    */
   const sendFile = useCallback(
-    (file) => {
+    (file, delivery = DELIVERY.PROGRESSIVE) => {
       if (!file || !isHostNow()) return
       currentFileRef.current = file
+      currentDeliveryRef.current = delivery
       for (const sender of sendersRef.current.values()) sender.abort('New video selected')
       sendersRef.current.clear()
       for (const peer of peersRef.current.values()) {
-        if (peer.isOpen) startSenderTo(peer, file)
+        if (peer.isOpen) startSenderTo(peer, file, delivery)
       }
     },
     [startSenderTo],
   )
+
+  /**
+   * Tear down any in-flight transfers and forget the current file. Used when
+   * the host switches the streaming mode (e.g. to a URL stream).
+   */
+  const cancelTransfers = useCallback(() => {
+    currentFileRef.current = null
+    for (const sender of sendersRef.current.values()) sender.abort('Streaming mode changed')
+    sendersRef.current.clear()
+    receiverRef.current?.reset(false)
+    setTransferStatus(null)
+  }, [])
 
   // ── Receiver management (guest) ───────────────────────────────────────────
 
@@ -219,7 +237,7 @@ export default function usePeerNetwork(socketApi) {
         onStateChange: (state) => {
           if (state === PEER_STATE.OPEN && isOfferer && currentFileRef.current) {
             // Late joiner (or reconnect): push the current video immediately.
-            startSenderTo(peer, currentFileRef.current)
+            startSenderTo(peer, currentFileRef.current, currentDeliveryRef.current)
           }
           if (state === PEER_STATE.CLOSED || state === PEER_STATE.FAILED) {
             sendersRef.current.get(peerId)?.abort('Connection lost')
@@ -281,6 +299,7 @@ export default function usePeerNetwork(socketApi) {
 
   return {
     sendFile,
+    cancelTransfers,
     registerVideoElement,
     transferStatus,
     onRemoteVideoReady,

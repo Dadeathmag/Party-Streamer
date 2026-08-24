@@ -7,11 +7,15 @@
  *   - 'blob' — anything MSE rejects (or errors on mid-stream): chunks are
  *              retained and assembled into a Blob on FILE_COMPLETE.
  *
+ * An offer with delivery === 'full' (host's full-transfer streaming mode)
+ * forces the blob path from the start — nothing plays until the whole file
+ * has arrived.
+ *
  * Chunks are ALWAYS retained until completion so a mid-stream MSE failure
  * degrades transparently into the blob path with zero data loss.
  */
 
-import { MSG } from './roomProtocol.js'
+import { MSG, DELIVERY } from './roomProtocol.js'
 import { createMsePlayer } from '../lib/msePlayer.js'
 
 export default class FileReceiver {
@@ -63,7 +67,7 @@ export default class FileReceiver {
     }
   }
 
-  /** @param {{ type: string, name?: string, size?: number, mimeType?: string, reason?: string }} msg */
+  /** @param {{ type: string, name?: string, size?: number, mimeType?: string, delivery?: string, reason?: string }} msg */
   handleControlMessage(msg) {
     switch (msg.type) {
       case MSG.FILE_OFFER: {
@@ -73,6 +77,7 @@ export default class FileReceiver {
           name: String(msg.name || 'video'),
           size: Number(msg.size) || 0,
           mimeType: String(msg.mimeType || ''),
+          delivery: msg.delivery === DELIVERY.FULL ? DELIVERY.FULL : DELIVERY.PROGRESSIVE,
         }
         this.onStarted?.({ name: this.offer.name })
         if (!this.videoEl) {
@@ -105,20 +110,28 @@ export default class FileReceiver {
     }
   }
 
-  /** Decide playback mode, wire the player, then green-light the sender. */
+  /**
+   * Decide playback mode, wire the player, then green-light the sender.
+   * delivery === 'full' skips MSE entirely: nothing is playable until the
+   * whole file has arrived and FILE_COMPLETE assembles the Blob.
+   */
   async _startPipeline() {
     const { mimeType } = this.offer
-    try {
-      this.mse = await createMsePlayer(this.videoEl, mimeType, () => {
-        // Mid-stream decode failure → degrade to blob mode, keep counting.
-        this.mse = null
-        if (this.mode === 'mse' && !this.finished) {
-          this.mode = 'blob'
-          this._detachMediaSource()
-        }
-      })
-      this.mode = 'mse'
-    } catch {
+    if (this.offer.delivery !== DELIVERY.FULL) {
+      try {
+        this.mse = await createMsePlayer(this.videoEl, mimeType, () => {
+          // Mid-stream decode failure → degrade to blob mode, keep counting.
+          this.mse = null
+          if (this.mode === 'mse' && !this.finished) {
+            this.mode = 'blob'
+            this._detachMediaSource()
+          }
+        })
+        this.mode = 'mse'
+      } catch {
+        this.mode = 'blob'
+      }
+    } else {
       this.mode = 'blob'
     }
     this.sendControl(MSG.FILE_ACCEPT)

@@ -41,6 +41,8 @@ server/                          CommonJS, port 3002
         ├── signalHandlers.js    WebRTC offer/answer/ICE blind pass-through relay
         ├── playbackHandlers.js  playback:sync relay (host-only) + disconnect teardown
         └── chatHandlers.js      chat:message relay (membership-checked, no storage)
+        └── streamHandlers.js    stream:set-mode (host-only) — stores the room's
+                                 streaming mode (p2p|full|url) + relays changes
 
 client/                          React 19 + Vite, ESM
 ├── vite.config.js               dev proxy: /socket.io → http://localhost:3002
@@ -98,11 +100,12 @@ One source of truth per handler lives at the top of each module in
 
 | Event              | Payload                                        | Ack response |
 | ------------------ | ---------------------------------------------- | ------------ |
-| `room:create`      | `{ name, code, displayName }`                  | `{ ok: true, roomId, code, members }` or `{ ok: false, error }` |
-| `room:join`        | `{ code, displayName }`                        | `{ ok: true, roomId, name, code, members }` |
+| `room:create`      | `{ name, code, displayName }`                  | `{ ok: true, roomId, code, members, streamMode }` or `{ ok: false, error }` |
+| `room:join`        | `{ code, displayName }`                        | `{ ok: true, roomId, name, code, members, streamMode }` |
 | `room:leave`       | —                                              | `{ ok: true }` |
 | `playback:sync`    | `{ action: 'play'\|'pause'\|'seek', time }`    | none (fire-and-forget) |
 | `chat:message`     | `{ text }`                                     | none (fire-and-forget) |
+| `stream:set-mode`  | `{ type: 'p2p'\|'full'\|'url', url? }`         | `{ ok: true, mode }` or `{ ok: false, error }` |
 | `signal:offer`     | `{ to, offer }`                                | none |
 | `signal:answer`    | `{ to, answer }`                               | none |
 | `signal:ice-candidate` | `{ to, candidate }`                        | none |
@@ -117,6 +120,12 @@ Server-side enforcement:
 - `playback:sync` is silently dropped unless the sender is that room's host.
 - `chat:message` requires membership; text is trimmed, capped at 300 chars,
   and never stored — the room's history lives only in clients.
+- `stream:set-mode` is host-only; `type` must be `p2p|full|url`, and `url`
+  mode requires an http(s) URL (trimmed, capped at 2048 chars). The mode is
+  stored on the room (returned to late joiners via their join ack) — `url`
+  streams are loaded by each client directly; no media ever transits P2P or
+  the server in that mode. `full` sets delivery:'full' on FILE_OFFER so
+  guests assemble the whole Blob before playback.
 - Signal relays are blind: the server never inspects SDP/ICE payloads.
 - Disconnect always runs `leaveCurrentRoom`; if the leaver was the host the
   room is destroyed and every member gets `room:host-left`.
@@ -130,6 +139,7 @@ Server-side enforcement:
 | `room:host-left`      | — (room destroyed)                         | room          |
 | `playback:sync`       | `{ action, time }`                         | everyone else |
 | `chat:message`        | `{ from, displayName, text, ts }`          | whole room incl. sender |
+| `stream:mode-changed` | `{ from, displayName, type, url }`         | whole room incl. sender |
 | `signal:offer`        | `{ from, offer }`                          | target peer   |
 | `signal:answer`       | `{ from, answer }`                         | target peer   |
 | `signal:ice-candidate`| `{ from, candidate }`                      | target peer   |

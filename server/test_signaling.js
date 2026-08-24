@@ -262,7 +262,99 @@ async function runTests() {
   }
   console.log('✓ Host chat relayed to members (input trimmed by server)');
 
-  // 12. Test Member-Left carries the leaver's display name
+  // ── Streaming mode (stream:set-mode / stream:mode-changed / join ack) ────
+
+  // 12. Non-host may not change the streaming mode
+  let strayModeChange = false;
+  const onStrayMode = () => {
+    strayModeChange = true;
+  };
+  hostSocket.on('stream:mode-changed', onStrayMode);
+  const denyModeRes = await new Promise((resolve) => {
+    guestSocket.emit('stream:set-mode', { type: 'url', url: 'https://example.com/sneaky.mp4' }, resolve);
+  });
+  if (denyModeRes.ok) {
+    throw new Error('Non-host was able to change the streaming mode');
+  }
+  await new Promise((r) => setTimeout(r, 200));
+  hostSocket.off('stream:mode-changed', onStrayMode);
+  if (strayModeChange) {
+    throw new Error('Non-host stream:set-mode reached the room');
+  }
+  console.log('✓ Non-host streaming mode change properly rejected by server');
+
+  // 13. Host sets a URL mode → relayed to everyone including the sender
+  const modePromises = [hostSocket, guestSocket, outsiderSocket].map(
+    (s) => new Promise((resolve) => s.once('stream:mode-changed', resolve))
+  );
+  const setModeRes = await new Promise((resolve) => {
+    hostSocket.emit(
+      'stream:set-mode',
+      { type: 'url', url: '  https://example.com/movie.mp4  ' },
+      resolve
+    );
+  });
+  if (!setModeRes.ok || setModeRes.mode?.type !== 'url') {
+    throw new Error('Host stream:set-mode did not ack ok: ' + JSON.stringify(setModeRes));
+  }
+  const modePayloads = await Promise.all(modePromises);
+  for (const p of modePayloads) {
+    if (
+      p.from !== hostSocket.id ||
+      p.displayName !== 'Test Host' ||
+      p.type !== 'url' ||
+      p.url !== 'https://example.com/movie.mp4'
+    ) {
+      throw new Error('stream:mode-changed data mismatch: ' + JSON.stringify(p));
+    }
+  }
+  console.log('✓ URL streaming mode set by host and relayed to all members (URL trimmed)');
+
+  // 14. Invalid modes / URLs are rejected
+  for (const bad of [
+    { type: 'hologram' },
+    { type: 'url' },
+    { type: 'url', url: 'ftp://example.com/movie.mp4' },
+  ]) {
+    const badRes = await new Promise((resolve) => {
+      hostSocket.emit('stream:set-mode', bad, resolve);
+    });
+    if (badRes.ok) {
+      throw new Error('Invalid stream mode accepted: ' + JSON.stringify(bad));
+    }
+  }
+  console.log('✓ Invalid streaming modes/URLs rejected by server');
+
+  // 15. Late joiner learns the current streaming mode via the join ack
+  const lateSocket = await connectSocket('Late Joiner');
+  const lateJoinRes = await new Promise((resolve) => {
+    lateSocket.emit('room:join', { code: roomCode, displayName: 'Late Guest' }, resolve);
+  });
+  if (
+    !lateJoinRes.ok ||
+    lateJoinRes.streamMode?.type !== 'url' ||
+    lateJoinRes.streamMode?.url !== 'https://example.com/movie.mp4'
+  ) {
+    throw new Error('Join ack missing current streamMode: ' + JSON.stringify(lateJoinRes.streamMode));
+  }
+  console.log('✓ Late joiner received current streamMode in join ack');
+  lateSocket.disconnect();
+
+  // 16. Switching back to p2p mode relays url:null
+  const fileModePromise = new Promise((resolve) => {
+    guestSocket.once('stream:mode-changed', resolve);
+  });
+  hostSocket.emit('stream:set-mode', { type: 'p2p' });
+  const fileModeData = await fileModePromise;
+  if (fileModeData.type !== 'p2p' || fileModeData.url !== null) {
+    throw new Error('File mode relay mismatch: ' + JSON.stringify(fileModeData));
+  }
+  // Restore URL mode so it is still active for the disconnect checks below.
+  hostSocket.emit('stream:set-mode', { type: 'url', url: 'https://example.com/movie.mp4' });
+  await new Promise((r) => setTimeout(r, 200));
+  console.log('✓ P2P streaming mode relayed with url:null');
+
+  // 17. Test Member-Left carries the leaver's display name
   const outsiderId = outsiderSocket.id; // capture before disconnect() clears it
   const memberLeftPromise = new Promise((resolve) => {
     hostSocket.once('room:member-left', resolve);
@@ -277,7 +369,7 @@ async function runTests() {
   }
   console.log('✓ Host received room:member-left with displayName:', leftData.displayName);
 
-  // 13. Test Disconnect / Host-Left
+  // 18. Test Disconnect / Host-Left
   const guestHostLeftPromise = new Promise((resolve) => {
     guestSocket.on('room:host-left', () => {
       console.log('✓ Guest received room:host-left upon host disconnect');

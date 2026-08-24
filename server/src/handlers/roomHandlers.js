@@ -6,12 +6,16 @@ const { leaveCurrentRoom } = require('./membership');
  * @file Room lifecycle handlers: creating, joining, and leaving rooms.
  *
  * Wire format (client ↔ server):
- *   client emits 'room:create' { name, code, displayName }  → ack { ok, roomId, code, members }
- *   client emits 'room:join'   { code, displayName }        → ack { ok, roomId, name, code, members }
+ *   client emits 'room:create' { name, code, displayName }  → ack { ok, roomId, code, members, streamMode }
+ *   client emits 'room:join'   { code, displayName }        → ack { ok, roomId, name, code, members, streamMode }
  *   client emits 'room:leave'                               → ack { ok }
  * server emits 'room:member-joined' { socketId, displayName, members }
  * server emits 'room:member-left'   { socketId, displayName, members }
  * server emits 'room:host-left'
+ *
+ * `streamMode` ({ type: 'p2p'|'full'|'url', url } | null) is the room's
+ * current streaming mode — see streamHandlers.js. Late joiners use it to
+ * sync up with whatever the host is already doing.
  *
  * `displayName` is optional; when omitted (or blank after trimming) the
  * server falls back to "Host" / "Guest-N". Duplicate names within a room get
@@ -66,10 +70,11 @@ function registerRoomHandlers(io, socket, store) {
       roomId: upperCode,
       code: upperCode,
       members: result.members,
+      streamMode: null,
     });
   });
 
-  // ── Join Room ─────────────────────────────────────────────────────────────
+  // ── Join Room ───────────────────────────────────────────────────────────────
   socket.on('room:join', ({ code, displayName }, ack) => {
     if (!code) {
       return ack?.({ ok: false, error: 'Room code is required.' });
@@ -108,6 +113,7 @@ function registerRoomHandlers(io, socket, store) {
       name: result.room.name,
       code: upperCode,
       members: result.members,
+      streamMode: result.room.streamMode ?? null,
     });
   });
 

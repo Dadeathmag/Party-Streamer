@@ -218,6 +218,112 @@
   border-top: 1px solid var(--border);
 }
 
+/* ── Streaming Mode Bar ── */
+.room__mode-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-glass, rgba(255, 255, 255, 0.03));
+  flex-wrap: wrap;
+}
+
+.room__mode-label {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.room__mode-seg {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.room__mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.room__mode-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.room__mode-btn--active {
+  background: var(--accent-dim);
+  border-color: var(--accent-border);
+  color: var(--accent-bright);
+}
+
+.room__url-form {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+  min-width: 200px;
+  max-width: 480px;
+}
+
+.room__url-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 10px;
+  font-size: 0.76rem;
+  font-family: var(--font-mono);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+}
+
+.room__url-input:focus {
+  outline: none;
+  border-color: var(--accent-border);
+}
+
+.room__url-load {
+  padding: 5px 14px;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  color: var(--accent-bright);
+  font-family: var(--font-sans);
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.room__url-load:hover {
+  background: rgba(139, 92, 246, 0.25);
+  box-shadow: var(--accent-glow);
+}
+
+.room__mode-hint {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .room__empty-icon {
   width: 80px;
   height: 80px;

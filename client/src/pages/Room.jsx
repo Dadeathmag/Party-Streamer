@@ -13,15 +13,20 @@
  * receive 'playback:sync' via onPlaybackSync and apply it to their local
  * <video> element. Guests' own controls work locally but are never broadcast.
  *
- * Media distribution: when the host selects a file it is ALSO streamed to
- * every connected viewer over WebRTC DataChannels (chunked, see
- * network/fileSender.js). Guests play it progressively via MSE, with a Blob
- * fallback for formats MSE can't ingest. All networking flows through
- * props provided by usePeerNetwork (mounted in App.jsx).
+ * Media distribution: the host picks a streaming mode in the mode bar —
+ *   'p2p'   local file streamed P2P in chunks, played progressively via MSE
+ *           (Blob fallback for formats MSE can't ingest; network/fileSender.js)
+ *   'full'  same P2P transfer, but guests only get playback after the whole
+ *           file has arrived (delivery:'full' on FILE_OFFER)
+ *   'url'   host pastes a direct media URL that every client loads itself;
+ *           no P2P transfer at all
+ * The mode is stored server-side and broadcast via 'stream:mode-changed'
+ * (see useSocket), so late joiners sync up through their join ack. All P2P
+ * networking flows through props provided by usePeerNetwork (App.jsx).
  */
 
 import { useState, useRef, useEffect } from 'react'
-import { ArrowLeftIcon, UploadIcon, UsersIcon, LockIcon, MaximizeIcon, MinimizeIcon } from '../components/Icons.jsx'
+import { ArrowLeftIcon, UploadIcon, DownloadIcon, LinkIcon, UsersIcon, LockIcon, MaximizeIcon, MinimizeIcon } from '../components/Icons.jsx'
 import VideoStage from '../components/VideoStage.jsx'
 import PlayerControls from '../components/PlayerControls.jsx'
 import ChatPanel from '../components/ChatPanel.jsx'
@@ -30,6 +35,13 @@ import './Room.css'
 const SAMPLE_MESSAGES = [
   { id: 0, user: 'System', text: 'Welcome to the party! 🎉', system: true },
 ]
+
+const STREAM_MODE_LABELS = { p2p: 'P2P', full: 'Full transfer', url: 'Link' }
+const STREAM_MODE_HINTS = {
+  p2p: 'Viewers start watching while the file streams over P2P.',
+  full: 'Viewers download the whole file first, then playback begins.',
+  url: 'Everyone loads the shared link directly — no P2P transfer.',
+}
 
 /**
  * @param {object} props
@@ -44,17 +56,28 @@ const SAMPLE_MESSAGES = [
  * @param {(cb: (displayName: string) => void) => void} props.onMemberJoined
  * @param {(cb: (displayName: string) => void) => void} props.onMemberLeft
  * @param {(cb: () => void) => void} props.onHostLeft
- * @param {(file: File) => void} props.sendFile   host: stream file to viewers
+ * @param {(file: File, delivery?: string) => void} props.sendFile
+ *        host: stream file to viewers ('progressive' | 'full')
+ * @param {() => void} props.cancelTransfers   abort in-flight transfers + forget current file
  * @param {(el: HTMLVideoElement|null) => void} props.registerVideoElement
  * @param {{ direction: 'send'|'receive', name: string, pct: number } | null}
  *        props.transferStatus
  * @param {(cb: (info: { url: string | null, name: string }) => void) => void}
  *        props.onRemoteVideoReady   guest: streamed video is playable
  * @param {(cb: (err: Error) => void) => void} props.onTransferError
+ * @param {{ type: 'p2p'|'full'|'url', url: string | null } | null}
+ *        props.streamMode           room's current streaming mode (host-set;
+ *                                    also the source of truth in link mode)
+ * @param {(type: string, url?: string|null) => Promise<{ ok: boolean, mode?: object, error?: string }>}
+ *        props.sendStreamMode       host: change the streaming mode
+ * @param {(cb: (mode: { type: string, url: string | null }) => void) => void}
+ *        props.onStreamModeChanged  live streaming-mode transitions
  */
-function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlaybackSync, sendChat, onChatMessage, onMemberJoined, onMemberLeft, onHostLeft, sendFile, registerVideoElement, transferStatus, onRemoteVideoReady, onTransferError }) {
+function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlaybackSync, sendChat, onChatMessage, onMemberJoined, onMemberLeft, onHostLeft, sendFile, cancelTransfers, registerVideoElement, transferStatus, onRemoteVideoReady, onTransferError, streamMode, sendStreamMode, onStreamModeChanged }) {
   const { name, code, role } = roomInfo
   const isHost = role === 'host'
+  // The room's active streaming mode ('p2p' until the host changes it).
+  const activeStreamType = streamMode?.type || 'p2p'
 
   // ── State ─────────────────────────────────────────────────────────────────
   const [messages, setMessages] = useState(SAMPLE_MESSAGES)
@@ -70,6 +93,8 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
   const [showMembers, setShowMembers] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
+  const [urlDraft, setUrlDraft] = useState('')
+  const [urlInputOpen, setUrlInputOpen] = useState(false)
 
   // ── Refs ──────────────────────────────────────────────────────────────────
   const videoRef = useRef(null)
@@ -77,6 +102,7 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
   const fileInputRef = useRef(null)
   const progressRef = useRef(null)
   const nextMsgIdRef = useRef(1)
+  const lastFileRef = useRef(null)
 
   // ── Effects ───────────────────────────────────────────────────────────────
 
@@ -172,6 +198,32 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
     onTransferError?.((err) => addSystemMessage(`Video transfer failed: ${err.message}`))
   }, [onTransferError])
 
+  // Both roles: live streaming-mode changes. URL mode tears down any P2P
+  // transfer and opens the link input (host); file/full modes are driven by
+  // the P2P FILE_OFFER handshake that follows, so only the chat note fires.
+  // The initial join state arrives via the streamMode PROP and is rendered
+  // directly below — this listener only handles transitions.
+  const seenStreamTypeRef = useRef(activeStreamType)
+  useEffect(() => {
+    onStreamModeChanged?.((mode) => {
+      if (!mode) return
+      const previous = seenStreamTypeRef.current
+      seenStreamTypeRef.current = mode.type
+      if (mode.type === 'url') {
+        cancelTransfers?.()
+        setUrlInputOpen(true)
+        setUrlDraft((d) => d || mode.url || '')
+        if (previous !== 'url') addSystemMessage('Host switched to link streaming')
+        return
+      }
+      if (previous === 'url') {
+        addSystemMessage(
+          `Streaming mode switched to ${mode.type === 'full' ? 'full transfer' : 'P2P'}`
+        )
+      }
+    })
+  }, [onStreamModeChanged, cancelTransfers])
+
   // Chat: the server broadcasts every message to the whole room INCLUDING the
   // sender, so this listener is the single place history gets appended from.
   useEffect(() => {
@@ -232,9 +284,18 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
 
   // ── Media selection (host only) ───────────────────────────────────────────
 
-  const handleFileSelect = (e) => {
+  const handleFileSelect = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
+    // Selecting a file while link-streaming implies switching back.
+    if (activeStreamType === 'url' && sendStreamMode) {
+      const res = await sendStreamMode('p2p')
+      if (!res?.ok) {
+        addSystemMessage(`Could not switch streaming mode: ${res?.error || 'unknown error'}`)
+        return
+      }
+    }
+    lastFileRef.current = file
     const url = URL.createObjectURL(file)
     setVideoSrc(url)
     setVideoName(file.name)
@@ -242,9 +303,43 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
     setCurrentTime(0)
     setMediaReady(false)
     addSystemMessage(`Now playing: ${file.name}`)
-    // Also distribute the file itself to connected viewers (P2P chunks).
-    sendFile?.(file)
+    // Also distribute the file itself to connected viewers (P2P chunks),
+    // delivered progressively or as a full transfer per the streaming mode.
+    sendFile?.(file, activeStreamType === 'full' ? 'full' : 'progressive')
     e.target.value = '' // allow re-selecting the same file later
+  }
+
+  // ── Streaming mode (host only; guests see a read-only indicator) ──────────
+
+  const applyStreamType = async (type, url = null) => {
+    if (!sendStreamMode) return
+    const previous = activeStreamType
+    const res = await sendStreamMode(type, url)
+    if (!res?.ok) {
+      addSystemMessage(`Could not switch streaming mode: ${res?.error || 'unknown error'}`)
+      return
+    }
+    // Re-send the current file under the new delivery so viewers restart in
+    // the chosen mode (no-op when nothing is loaded or mode didn't change).
+    if (previous !== type && lastFileRef.current && type !== 'url') {
+      sendFile?.(lastFileRef.current, type === 'full' ? 'full' : 'progressive')
+    }
+  }
+
+  const selectStreamType = async (type) => {
+    setUrlInputOpen(type === 'url')
+    if (type !== 'url') await applyStreamType(type)
+  }
+
+  const handleUrlSubmit = async (e) => {
+    e.preventDefault()
+    const trimmed = urlDraft.trim()
+    if (!trimmed) return
+    if (!/^https?:\/\//i.test(trimmed)) {
+      addSystemMessage('Media URL must start with http:// or https://')
+      return
+    }
+    await applyStreamType('url', trimmed)
   }
 
   // Chat: system lines when other members join or leave the party.
@@ -271,6 +366,15 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
   }
 
   const pct = duration ? (currentTime / duration) * 100 : 0
+
+  // Link mode serves the shared URL straight from the mode state — no state
+  // syncing needed. File modes fall back to the selected/received source.
+  const displaySrc =
+    activeStreamType === 'url' ? streamMode?.url || null : videoSrc
+  const displayName =
+    activeStreamType === 'url'
+      ? streamMode?.url?.split('/').pop()?.split('?')[0] || 'Host link'
+      : videoName
 
   const incomingLabel =
     transferStatus?.direction === 'receive'
@@ -345,14 +449,60 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
         </div>
       </header>
 
+      {/* ── Streaming Mode Bar ── */}
+      <div className="room__mode-bar" id="mode-selector">
+        <span className="room__mode-label">Streaming</span>
+        {isHost ? (
+          <>
+            <div className="room__mode-seg" role="group" aria-label="Streaming mode">
+              {['p2p', 'full', 'url'].map((type) => (
+                <button
+                  key={type}
+                  id={`btn-mode-${type}`}
+                  className={`room__mode-btn ${activeStreamType === type ? 'room__mode-btn--active' : ''}`}
+                  onClick={() => selectStreamType(type)}
+                  title={STREAM_MODE_HINTS[type]}
+                >
+                  {type === 'p2p' && <UploadIcon size={13} />}
+                  {type === 'full' && <DownloadIcon size={13} />}
+                  {type === 'url' && <LinkIcon size={13} />}
+                  <span>{STREAM_MODE_LABELS[type]}</span>
+                </button>
+              ))}
+            </div>
+            {urlInputOpen && (
+              <form className="room__url-form" onSubmit={handleUrlSubmit}>
+                <input
+                  id="input-stream-url"
+                  className="room__url-input"
+                  type="text"
+                  placeholder="https://example.com/video.mp4"
+                  value={urlDraft}
+                  onChange={(e) => setUrlDraft(e.target.value)}
+                  autoFocus
+                />
+                <button type="submit" className="room__url-load" id="btn-set-stream-url">
+                  Load
+                </button>
+              </form>
+            )}
+            <span className="room__mode-hint">{STREAM_MODE_HINTS[activeStreamType]}</span>
+          </>
+        ) : (
+          <span className="room__mode-hint">
+            Host is streaming: {STREAM_MODE_LABELS[activeStreamType]}
+          </span>
+        )}
+      </div>
+
       {/* ── Main Area ── */}
       <div className={`room__main ${chatCollapsed ? 'room__main--chat-collapsed' : ''}`}>
         {/* Video Panel */}
         <div className="room__video-panel">
           <VideoStage
             videoRef={videoRef}
-            videoSrc={videoSrc}
-            videoName={videoName}
+            videoSrc={displaySrc}
+            videoName={displayName}
             mediaReady={mediaReady}
             incomingLabel={incomingLabel}
             isHost={isHost}
@@ -381,7 +531,7 @@ function Room({ roomInfo, onLeave, members = [], myId, sendPlaybackSync, onPlayb
             onToggleMute={toggleMute}
             currentTime={currentTime}
             duration={duration}
-            videoName={videoName}
+            videoName={displayName}
           />
         </div>
 

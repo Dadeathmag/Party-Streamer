@@ -9,7 +9,8 @@
  *
  * Data layout:
  *   rooms          Map<code, Room>
- *     Room = { code, name, hostId, members: Map<socketId, Member> }
+ *     Room = { code, name, hostId, members: Map<socketId, Member>,
+ *              streamMode: { type: 'p2p'|'full'|'url', url: string|null } | null }
  *     Member = { displayName, role: 'host' | 'member' }
  *   socketToRoom   Map<socketId, code>      — reverse index for O(1) lookups
  *   guestCounters  Map<code, number>        — next "Guest-N" number per room
@@ -107,6 +108,7 @@ class RoomStore {
       name,
       hostId,
       members: new Map(),
+      streamMode: null,
     };
     room.members.set(
       hostId,
@@ -146,6 +148,21 @@ class RoomStore {
     this.socketToRoom.set(socketId, code);
 
     return { ok: true, room, displayName: finalName, members: this.serialiseMembers(room) };
+  }
+
+  /**
+   * Store the room's current streaming mode (host-authoritative). The payload
+   * shape is validated by the handler; the store just keeps it verbatim.
+   *
+   * @param {string} code
+   * @param {{ type: string, url: string | null }} mode
+   * @returns {object | null} the stored mode, or null when the room is gone
+   */
+  setStreamMode(code, mode) {
+    const room = this.rooms.get(code);
+    if (!room) return null;
+    room.streamMode = mode;
+    return room.streamMode;
   }
 
   /**

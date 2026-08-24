@@ -70,10 +70,14 @@ function App() {
           onMemberLeft={socket.onMemberLeft}
           onHostLeft={socket.onHostLeft}
           sendFile={peerNet.sendFile}
+          cancelTransfers={peerNet.cancelTransfers}
           registerVideoElement={peerNet.registerVideoElement}
           transferStatus={peerNet.transferStatus}
           onRemoteVideoReady={peerNet.onRemoteVideoReady}
           onTransferError={peerNet.onTransferError}
+          streamMode={socket.streamMode}
+          sendStreamMode={socket.sendStreamMode}
+          onStreamModeChanged={socket.onStreamModeChanged}
         />
       )}
     </>
