@@ -947,7 +947,7 @@ button.room__vis-toggle--locked:hover {
   left: 100%;
   padding: 3px 12px;
   border-radius: var(--radius-full);
-  background: rgba(13, 13, 18, 0.6);
+  background: transparent;
   color: #fff;
   font-size: 0.9rem;
   white-space: nowrap;
