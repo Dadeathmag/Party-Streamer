@@ -5,6 +5,9 @@ import {
   SkipForwardIcon,
   VolumeIcon,
   VolumeOffIcon,
+  MaximizeIcon,
+  MinimizeIcon,
+  RotateIcon,
 } from './Icons.jsx'
 import { formatTime } from '../lib/formatTime.js'
 
@@ -29,6 +32,15 @@ import { formatTime } from '../lib/formatTime.js'
  * @param {number} props.currentTime            seconds
  * @param {number} props.duration               seconds; 0 until metadata loads
  * @param {string} props.videoName              shown as "now playing", if any
+ * @param {boolean} [props.isFullscreen]        toggles the fullscreen icon
+ * @param {() => void} [props.onToggleFullscreen]
+ * @param {boolean} [props.isOrientationLocked] true while landscape orientation
+ *                                              is locked (lights the button)
+ * @param {() => void} [props.onToggleOrientation]
+ *                                              fullscreen + landscape lock toggle
+ *                                              (touch devices only; omit to hide)
+ * @param {boolean} [props.disabled]            gray out transport + seek when the
+ *                                              active source can't be synced
  */
 export default function PlayerControls({
   progressRef,
@@ -44,11 +56,21 @@ export default function PlayerControls({
   currentTime,
   duration,
   videoName,
+  isFullscreen = false,
+  onToggleFullscreen,
+  isOrientationLocked = false,
+  onToggleOrientation,
+  disabled = false,
 }) {
   return (
-    <div className="room__controls">
+    <div className={`room__controls ${disabled ? 'room__controls--disabled' : ''}`}>
       {/* Progress Bar */}
-      <div className="room__progress" ref={progressRef} onClick={onSeek} id="progress-bar">
+      <div
+        className="room__progress"
+        ref={progressRef}
+        onClick={disabled ? undefined : onSeek}
+        id="progress-bar"
+      >
         <div className="room__progress-fill" style={{ width: `${pct}%` }} />
         <div className="room__progress-thumb" style={{ left: `${pct}%` }} />
       </div>
@@ -58,7 +80,8 @@ export default function PlayerControls({
           <button
             className="room__ctrl-btn"
             id="btn-play-pause"
-            onClick={onTogglePlay}
+            onClick={disabled ? undefined : onTogglePlay}
+            disabled={disabled}
             title={isPlaying ? 'Pause' : 'Play'}
           >
             {isPlaying ? (
@@ -72,6 +95,7 @@ export default function PlayerControls({
             className="room__ctrl-btn"
             id="btn-skip-back"
             onClick={() => onSkip(-10)}
+            disabled={disabled}
             title="Back 10s"
           >
             <SkipBackIcon size={18} />
@@ -81,6 +105,7 @@ export default function PlayerControls({
             className="room__ctrl-btn"
             id="btn-skip-fwd"
             onClick={() => onSkip(10)}
+            disabled={disabled}
             title="Forward 10s"
           >
             <SkipForwardIcon size={18} />
@@ -118,6 +143,24 @@ export default function PlayerControls({
               {videoName.length > 30 ? videoName.slice(0, 30) + '…' : videoName}
             </span>
           )}
+          {onToggleOrientation && (
+            <button
+              className={`room__ctrl-btn room__orientation-btn ${isOrientationLocked ? 'room__ctrl-btn--active' : ''}`}
+              id="btn-toggle-orientation"
+              onClick={onToggleOrientation}
+              title={isOrientationLocked ? 'Back to portrait' : 'Rotate to landscape'}
+            >
+              <RotateIcon size={18} />
+            </button>
+          )}
+          <button
+            className="room__ctrl-btn"
+            id="btn-toggle-fullscreen"
+            onClick={onToggleFullscreen}
+            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          >
+            {isFullscreen ? <MinimizeIcon size={18} /> : <MaximizeIcon size={18} />}
+          </button>
         </div>
       </div>
     </div>

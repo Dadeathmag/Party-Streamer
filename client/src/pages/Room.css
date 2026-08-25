@@ -2,13 +2,15 @@
    Room Page — Dark & Bold
    ═══════════════════════════════════════════════ */
 
-/* ── Layout ── */
+/* ── Layout ──
+   min-height (not fixed height) so short viewports scroll the page instead of
+   crushing the stage; overflow-x stays clipped for the hanging chat handle. */
 .room {
-  height: 100dvh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   background: var(--bg-base);
-  overflow: hidden;
+  overflow-x: hidden;
 }
 
 /* ── Top Bar ── */
@@ -207,11 +209,12 @@ button.room__vis-toggle--locked:hover {
   display: inline;
 }
 
-/* ── Main Area ── */
+/* ── Main Area ──
+   No min-height:0 here — children keep their floors and grow the page when
+   the viewport can't fit them (the page scrolls, nothing gets crushed). */
 .room__main {
   flex: 1;
   display: flex;
-  min-height: 0;
   transition: all 0.3s var(--ease-out);
 }
 
@@ -221,6 +224,7 @@ button.room__vis-toggle--locked:hover {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 280px;
 }
 
 .room__video-container {
@@ -265,6 +269,69 @@ button.room__vis-toggle--locked:hover {
   color: var(--text-muted);
   background: var(--bg-glass, rgba(255, 255, 255, 0.05));
   border-top: 1px solid var(--border);
+}
+
+/* Provider-embed layer (YouTube/Vimeo/Dailymotion/Twitch link mode).
+   The native <video> stays mounted underneath (the P2P/MSE layer keeps its
+   handle) but is visually hidden while an embed owns the stage. */
+.room__video--hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.room__embed-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #000;
+}
+
+.room__embed-frame {
+  width: 100%;
+  height: 100%;
+}
+
+.room__embed-frame iframe,
+.room__embed-iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+/* Escape hatch shown under a fatal embed error: lets users verify the link
+   plays outside the embed (provider error screens are invisible to us). */
+.room__embed-open-original {
+  margin-top: 12px;
+  color: var(--accent-bright);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.room__embed-open-original:hover {
+  text-decoration: underline;
+}
+
+.room__embed-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  animation: fadeIn 0.3s var(--ease-out) both;
+}
+
+.room__embed-loading--error {
+  color: #f87171;
+  padding: 0 24px;
+  text-align: center;
 }
 
 /* ── Streaming Mode Bar ── */
@@ -558,6 +625,23 @@ button.room__vis-toggle--locked:hover {
   background: var(--bg-hover);
 }
 
+.room__ctrl-btn--active {
+  color: var(--accent-bright);
+}
+
+/* Orientation lock is a touch-device feature (browsers only honor it in
+   fullscreen on mobile); hide the button where a mouse + desktop browser
+   would find it permanently rejected. */
+.room__orientation-btn {
+  display: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .room__orientation-btn {
+    display: flex;
+  }
+}
+
 /* Volume Slider */
 .room__volume-group {
   display: flex;
@@ -608,8 +692,19 @@ button.room__vis-toggle--locked:hover {
   transition: width 0.3s var(--ease-out);
 }
 
+/* Collapsed = panel gone entirely; only the floating toggle handle remains
+   (it hangs outside the zero-width aside, over the video's right edge). */
 .room__chat--collapsed {
-  width: 48px;
+  width: 0;
+  min-width: 0;
+  background: transparent;
+  border-left-color: transparent;
+}
+
+/* With no panel under it the handle must clear the screen edge entirely
+   (.room clips overflow), so pull the whole button inside. */
+.room__chat--collapsed .room__chat-toggle {
+  left: -44px;
 }
 
 .room__chat-toggle {
@@ -664,6 +759,7 @@ button.room__vis-toggle--locked:hover {
 /* Chat Messages */
 .room__chat-messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 12px 16px;
   display: flex;
@@ -773,6 +869,110 @@ button.room__vis-toggle--locked:hover {
   cursor: not-allowed;
 }
 
+/* ── Fullscreen / Cinema Mode ──
+   The document goes fullscreen; page chrome hides and the video takes over
+   the viewport. Controls float over the video, chat becomes a translucent
+   overlay pinned to the right edge. */
+.room--fullscreen .room__topbar,
+.room--fullscreen .room__mode-bar {
+  display: none;
+}
+
+.room--fullscreen .room__main,
+.room--fullscreen .room__video-panel {
+  position: relative;
+}
+
+.room--fullscreen .room__controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.85) 40%);
+  border-top: none;
+  padding-top: 24px;
+}
+
+.room--fullscreen .room__transfer-status {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: rgba(13, 13, 18, 0.85);
+}
+
+.room--fullscreen .room__chat {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  height: auto;
+  max-width: min(340px, 75vw);
+  z-index: 25;
+  background: rgba(13, 13, 18, 0.85);
+  backdrop-filter: blur(8px);
+}
+
+.room--fullscreen .room__chat--collapsed {
+  background: transparent;
+  backdrop-filter: none;
+}
+
+/* ── Bullet (Danmaku) Messages ──
+   Chat messages scroll right-to-left across the video while fullscreen.
+   The layer lives inside .room__video-container (VideoStage) and is hidden
+   outside fullscreen; pointer-events stay off so video clicks still work. */
+.room__bullets {
+  display: none;
+}
+
+.room--fullscreen .room__bullets {
+  display: block;
+  position: absolute;
+  top: 16px;
+  left: 0;
+  right: 0;
+  height: 60%;
+  z-index: 15;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.room__bullet {
+  position: absolute;
+  left: 100%;
+  padding: 3px 12px;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: #fff;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  animation-name: bullet-scroll;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+  will-change: transform;
+}
+
+.room__bullet-user {
+  margin-right: 8px;
+  opacity: 0.7;
+  font-size: 0.8rem;
+}
+
+.room__bullet--own {
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+
+@keyframes bullet-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(calc(-100vw - 100%)); }
+}
+
 /* ── Responsive ── */
 @media (max-width: 768px) {
   .room__main {
@@ -782,13 +982,15 @@ button.room__vis-toggle--locked:hover {
   .room__chat {
     width: 100%;
     height: 40%;
+    min-height: 240px;
     border-left: none;
     border-top: 1px solid var(--border);
   }
 
   .room__chat--collapsed {
-    width: 100%;
-    height: 48px;
+    width: 0;
+    height: auto;
+    min-height: 0;
   }
 
   .room__chat-toggle {
@@ -797,15 +999,66 @@ button.room__vis-toggle--locked:hover {
     transform: translateX(-50%);
   }
 
+  .room__chat--collapsed .room__chat-toggle {
+    top: 12px;
+    left: -44px;
+    transform: none;
+  }
+
   .room__action-label {
     display: none;
   }
 
   .room__topbar {
-    padding: 0 10px;
+    height: auto;
+    min-height: 56px;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    row-gap: 6px;
+  }
+
+  .room__topbar-left {
+    flex: 1 1 auto;
+  }
+
+  .room__meta {
+    flex-wrap: wrap;
+    row-gap: 3px;
   }
 
   .room__name {
     font-size: 0.85rem;
+  }
+}
+
+/* Narrow phones: drop the role badge (conveyed by controls + tooltips),
+   tighten badge/button chrome so one row still fits */
+@media (max-width: 540px) {
+  .room__role-badge {
+    display: none;
+  }
+
+  .room__vis-toggle {
+    padding: 2px 6px;
+    gap: 3px;
+  }
+
+  .room__code-badge {
+    padding: 1px 6px;
+  }
+
+  .room__action-btn {
+    padding: 7px 9px;
+  }
+
+  .room__topbar-right {
+    gap: 6px;
+  }
+}
+
+/* Smallest tier: icon-only visibility/lock toggles (titles keep them usable) */
+@media (max-width: 400px) {
+  .room__vis-label {
+    display: none;
   }
 }
