@@ -675,11 +675,9 @@ button.room__vis-toggle--locked:hover {
   font-size: 0.72rem;
   color: var(--text-muted);
   max-width: 200px;
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex-shrink: 1;
 }
 
 /* ── Chat Sidebar ── */
@@ -1002,13 +1000,9 @@ button.room__vis-toggle--locked:hover {
   }
 
   .room__chat--collapsed .room__chat-toggle {
-    position: fixed;
-    bottom: 20px;
-    right: 20px;
-    top: auto;
-    left: auto;
+    top: 12px;
+    left: -44px;
     transform: none;
-    z-index: 50;
   }
 
   .room__action-label {
@@ -1035,10 +1029,6 @@ button.room__vis-toggle--locked:hover {
   .room__name {
     font-size: 0.85rem;
   }
-
-  .room__now-playing-label {
-    max-width: 100px;
-  }
 }
 
 /* Narrow phones: drop the role badge (conveyed by controls + tooltips),
@@ -1063,10 +1053,6 @@ button.room__vis-toggle--locked:hover {
 
   .room__topbar-right {
     gap: 6px;
-  }
-
-  .room__now-playing-label {
-    display: none;
   }
 }
 
